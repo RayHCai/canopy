@@ -1,0 +1,39 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Environments (never commit; see README "OneDrive" note) ---
+.venv/
+venv/
+env/
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Canopy run artefacts: generated scenes, recordings, packets ---
+out/
+
+# --- gym-pybullet-drones default log dir (if an upstream example is run in-tree) ---
+third_party/gym-pybullet-drones/results/
+third_party/gym-pybullet-drones/**/*.egg-info/
+
+# --- Editors / OS ---
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Keep the shared VS Code settings, ignore per-user state.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json

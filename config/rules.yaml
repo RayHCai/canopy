@@ -1,0 +1,18 @@
+# ---------------------------------------------------------------------------
+# Site placement constraints and scoring weights.
+#
+# PLACEHOLDER VALUES -- these stand in for the real SSR checklist, which is a
+# declared non-goal (spec.md "Non-goals"). Replace wholesale; do not tune.
+# ---------------------------------------------------------------------------
+battery_w_m: 1.1
+battery_d_m: 0.3
+front_clearance_m: 0.9
+door_clearance_m: 0.9
+window_clearance_m: 0.3
+max_conduit_m: 12.0
+
+weights:
+  conduit_per_m: 1.0
+  bush_removal: 3.0
+  south_facing: 2.0
+  driveway_adjacent: -0.5

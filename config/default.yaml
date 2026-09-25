@@ -1,0 +1,84 @@
+# ---------------------------------------------------------------------------
+# Canopy tunables. Single source of truth -- code must not hardcode any of
+# these. Values come from spec.md "Config defaults"; tune only against
+# batch_eval.py, never by editing code.
+#
+# Units: metres, seconds, radians. World frame is Z-up, origin at lot centre,
+# ground at z = 0.
+# ---------------------------------------------------------------------------
+
+sim:
+  control_hz: 20            # dynamics / waypoint-follower tick
+  sensor_hz: 5              # 360-degree scan rate
+  replan_hz: 1              # MissionController reassignment rate
+  timeout_s: 300            # hard mission timeout, then jump to PHOTOS
+  dynamics: kinematic       # kinematic | pybullet
+  v_max: 3.0
+  a_max: 4.0
+  battery_drain_per_10s: 0.01
+  rth_battery: 0.15
+  yaw_rate_deg_s: 90.0      # kinematic yaw slew toward velocity
+
+# PyBullet-backed dynamics. Only read when sim.dynamics == pybullet.
+# pyb_freq must be an integer multiple of ctrl_freq, and ctrl_freq an integer
+# multiple of sim.control_hz, so one control tick is a whole number of
+# inner steps. 240 / 60 = 4 and 60 / 20 = 3.
+physics:
+  drone_model: cf2x         # cf2x | cf2p | racer (gym-pybullet-drones assets)
+  pyb_freq: 240
+  ctrl_freq: 60
+  gui: false
+
+sensor:
+  az_rays: 180
+  el_rays: 60
+  el_min_deg: -75
+  el_max_deg: 30
+  max_range_m: 12.0
+  range_noise_m: 0.01
+
+worldgen:
+  lot_m: [30, 40]
+  bush_density_per_10m: 2.0
+  p_meter_occluded: 0.5
+  trees: [2, 5]
+  max_edge_m: 0.2
+
+map:
+  voxel_m: 0.25
+  height_m: 12.0
+  plan_voxel_m: 0.5
+  min_hits: 30
+  coverage_max_range_m: 8.0
+  coverage_max_incidence_deg: 70
+
+planner:
+  orbit_altitudes: [2.0, 4.5, 8.0]
+  orbit_margin_m: 4.0
+  orbit_waypoints_per_ring: 24
+  frontier_min_voxels: 8
+  gain_lambda: 0.05
+  goal_conflict_radius_m: 3.0
+  goal_conflict_penalty: 5.0
+  hysteresis: 0.2
+  blacklist_s: 30
+  done_ground_coverage: 0.90
+
+safety:
+  drone_radius_m: 0.25
+  margin_m: 0.35
+  min_separation_m: 1.5
+  ceiling_m: 10.0
+  geofence_inset_m: 0.5
+  stuck_window_s: 5
+  stuck_min_progress_m: 0.5
+
+# Standalone single-drone flight demo (`canopy-fly`). Obstacle-free: this is
+# the M0/M1 stack check, not a mission.
+demo:
+  home: [0.0, 0.0, 0.0]
+  takeoff_altitude_m: 2.0
+  orbit_radius_m: 5.0
+  orbit_waypoints: 24
+  laps: 2
+  waypoint_tolerance_m: 0.35

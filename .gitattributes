@@ -1,0 +1,20 @@
+# Normalise line endings on checkin; check out native. Required on Windows.
+* text=auto
+
+# Generated / binary assets: never touch, never diff.
+*.obj    binary
+*.dae    binary
+*.urdf   text eol=lf
+*.rrd    binary
+*.gif    binary
+*.png    binary
+*.jpg    binary
+*.bin    binary
+*.npy    binary
+*.npz    binary
+
+# Lockfile is generated: keep diffs readable but do not merge by hand.
+uv.lock  -diff linguist-generated=true
+
+# Shell scripts must stay LF even on Windows (WSL executes them).
+*.sh     text eol=lf

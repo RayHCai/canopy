@@ -1,0 +1,195 @@
+# ---------------------------------------------------------------------------
+# Canopy: one package, one dependency graph, one source of truth.
+#
+# Optional extras mirror the architecture's optional tracks (see spec.md
+# "Key architecture decisions"): the critical path is kinematic + ray casting,
+# so `physics`, `rl` and `detect` are strictly additive and never required to
+# run a mission.
+# ---------------------------------------------------------------------------
+[project]
+name = "canopy"
+version = "0.1.0"
+description = "Autonomous drone swarm that maps a house, finds the meter, and produces a Site Survey Review packet."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Ray Flanagan" }]
+requires-python = ">=3.11,<3.12"
+
+# Pinned to 3.11 deliberately: it is the newest interpreter for which *every*
+# dependency ships a prebuilt wheel, PyBullet included. See
+# docs/adr/0002-python-311-and-uv.md.
+dependencies = [
+  "numpy>=2.4,<3",
+  "scipy>=1.17,<2",
+  "scikit-image>=0.26,<0.27",
+  "shapely>=2.1,<3",
+  "trimesh>=5.1,<6",
+  "mapbox-earcut>=2.1,<3",
+  "open3d>=0.20,<0.21",
+  "rerun-sdk>=0.38,<0.39",
+  "pyyaml>=6.0,<7",
+  "jinja2>=3.1,<4",
+  "matplotlib>=3.9,<4",
+]
+
+[project.optional-dependencies]
+# Physics-backed dynamics (`--dynamics pybullet`).
+#
+# PyBullet publishes manylinux wheels only -- no Windows wheel has ever
+# existed, and no CPython wheel above 3.11. The marker below is load-bearing:
+# without it, `uv sync --extra physics` on Windows would try to compile
+# Bullet's C++ with MSVC. Run the physics track under WSL2 (see README).
+physics = [
+  "pybullet>=3.2.7,<4; sys_platform != 'win32'",
+  "gym-pybullet-drones; sys_platform != 'win32'",
+]
+rl = ["stable-baselines3>=2.9,<3", "torch>=2.4"]
+detect = ["ultralytics>=8.3"]
+dev = [
+  "ruff>=0.15,<0.16",
+  "mypy>=1.13,<2",
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+  "pre-commit>=4,<5",
+  "types-PyYAML>=6",
+]
+
+[project.scripts]
+# Entry points live in the package, not in loose scripts, so they are
+# importable, testable and type-checked like everything else.
+canopy-fly = "canopy.cli.fly_single:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/canopy"]
+
+# ---------------------------------------------------------------------------
+# uv: resolver + workspace wiring
+# ---------------------------------------------------------------------------
+[tool.uv]
+# `physics` is intentionally excluded from the default sync on Windows; the
+# marker above handles it, but this keeps accidental resolution honest.
+default-groups = []
+
+[tool.uv.sources]
+# Our vendored fork, tracked in-tree under third_party/ via git subtree.
+gym-pybullet-drones = { path = "third_party/gym-pybullet-drones", editable = true }
+
+# ---------------------------------------------------------------------------
+# Ruff: lint + format. One tool, no black/isort/flake8 sprawl.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["third_party"]
+
+[tool.ruff.lint]
+select = [
+  "F",    # pyflakes
+  "E", "W",  # pycodestyle
+  "I",    # isort
+  "N",    # pep8-naming
+  "D",    # pydocstyle
+  "UP",   # pyupgrade
+  "ANN",  # flake8-annotations
+  "S",    # flake8-bandit
+  "B",    # flake8-bugbear
+  "A",    # flake8-builtins
+  "C4",   # flake8-comprehensions
+  "DTZ",  # flake8-datetimez
+  "ISC",  # implicit-str-concat
+  "ICN",  # import-conventions
+  "PIE",  # flake8-pie
+  "PT",   # flake8-pytest-style
+  "RET",  # flake8-return
+  "SIM",  # flake8-simplify
+  "TID",  # flake8-tidy-imports
+  "ARG",  # unused arguments
+  "PTH",  # use pathlib
+  "PL",   # pylint
+  "NPY",  # numpy-specific
+  "PERF", # perflint
+  "FURB", # refurb
+  "RUF",
+]
+ignore = [
+  "D203",    # conflicts with D211
+  "D213",    # conflicts with D212
+  "ANN401",  # Any is occasionally the honest annotation
+  "PLR0913", # sim/planner constructors legitimately take many tunables
+  "ISC001",  # handled by the formatter
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may assert, use magic numbers, and skip docstrings on trivial cases.
+"tests/**" = ["S101", "D100", "D103", "PLR2004", "ANN201", "ARG001"]
+# Package markers document the module boundary; no runtime code to annotate.
+"src/canopy/**/__init__.py" = ["D104"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["canopy"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# mypy: strict over our own code, permissive at the third-party boundary.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+files = ["src/canopy", "tests"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["redundant-expr", "possibly-undefined", "truthy-bool"]
+exclude = ["^third_party/"]
+
+[[tool.mypy.overrides]]
+# None of these ship (usable) type information.
+module = [
+  "open3d.*", "trimesh.*", "skimage.*", "shapely.*", "scipy.*",
+  "matplotlib.*", "pybullet.*", "gym_pybullet_drones.*", "rerun.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+  "--strict-markers",
+  "--strict-config",
+  "-ra",
+  "--import-mode=importlib",
+]
+markers = [
+  "slow: takes more than a couple of seconds",
+  "physics: requires the `physics` extra (PyBullet); skipped where unavailable",
+]
+filterwarnings = ["error", "default::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["src/canopy"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  '@(abc\.)?abstractmethod',
+]
