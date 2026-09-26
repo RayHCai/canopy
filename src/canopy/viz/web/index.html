@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Canopy</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="scene" tabindex="0" aria-label="Canopy simulation"></canvas>
+
+  <div id="hud" class="hud" role="status" aria-live="polite"></div>
+
+  <div id="hint" class="hint" aria-hidden="true">
+    <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+    <span><kbd>Q</kbd><kbd>E</kbd> down / up</span>
+    <span>drag to look</span>
+    <span>scroll to zoom</span>
+  </div>
+
+  <button id="restart" class="restart" type="button" aria-label="Restart from the beginning">
+    <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none"
+         stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v5h5"/>
+    </svg>
+  </button>
+
+  <button id="playpause" class="playpause" type="button" aria-label="Pause"
+          aria-pressed="false">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+      <path class="bar bar-l"/>
+      <path class="bar bar-r"/>
+    </svg>
+  </button>
+
+  <button id="gear" class="gear" type="button" aria-label="Settings"
+          aria-controls="settings" aria-expanded="false">
+    <!-- Two glyphs stacked in one button; CSS morphs one into the other. -->
+    <svg class="icon icon-gear" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"
+         fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+    <svg class="icon icon-close" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"
+         fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <path d="M6 6l12 12M18 6L6 18"/>
+    </svg>
+  </button>
+
+  <aside id="settings" class="panel" aria-label="Settings" aria-hidden="true" inert>
+    <header class="panel-head">
+      <h1>Settings</h1>
+    </header>
+
+    <section class="group">
+      <h2>Swarm</h2>
+      <div class="field">
+        <div class="field-row">
+          <label for="drones">Drones</label>
+          <output id="drones-out" for="drones" class="count">3</output>
+        </div>
+        <input id="drones" type="range" min="1" max="5" step="1" value="3">
+        <div class="ticks" id="drone-ticks" aria-hidden="true"></div>
+      </div>
+    </section>
+
+    <section class="group">
+      <h2>Simulation</h2>
+      <div class="field">
+        <div class="field-row">
+          <label for="speed">Time speed</label>
+          <output id="speed-out" for="speed" class="count">1&times;</output>
+        </div>
+        <!-- Logarithmic: the slider position is the exponent, so 0.5x-1x and
+             1x-2x get equal halves of the track and 1x sits in the middle. -->
+        <input id="speed" type="range" min="0" max="1000" step="1" value="500">
+        <div class="ticks log-ticks" id="speed-ticks" aria-hidden="true"></div>
+      </div>
+    </section>
+
+    <section class="group">
+      <h2>Display</h2>
+      <label class="toggle">
+        <span>Spawn pads</span>
+        <input id="show-pads" type="checkbox" role="switch" checked>
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <label class="toggle">
+        <span>Flight trails</span>
+        <input id="show-trails" type="checkbox" role="switch" checked>
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <label class="toggle">
+        <span>Frontier targets</span>
+        <input id="show-frontiers" type="checkbox" role="switch" checked>
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <label class="toggle">
+        <span>Detected objects</span>
+        <input id="show-detections" type="checkbox" role="switch" checked>
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+    </section>
+
+    <section class="group">
+      <h2>Scene</h2>
+      <button id="new-scene" class="action" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+            stroke-linejoin="round" d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>
+        </svg>
+        <span>New random scene</span>
+      </button>
+    </section>
+  </aside>
+
+  <!-- Suggested battery sites, shown once mapping is complete. -->
+  <section id="sites" class="sites" aria-label="Suggested battery sites" hidden>
+    <div id="site-card" class="site-card" aria-live="polite">
+      <div class="site-head">
+        <span class="site-swatch" aria-hidden="true"></span>
+        <span id="site-title" class="site-title"></span>
+        <span id="site-meta" class="site-meta"></span>
+      </div>
+      <ul id="site-warnings" class="site-warnings"></ul>
+    </div>
+    <nav class="site-nav" aria-label="Browse battery sites">
+      <button id="site-prev" class="site-btn" type="button" aria-label="Previous site">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 5l-7 7 7 7"/>
+        </svg>
+      </button>
+      <span id="site-count" class="site-count" aria-live="polite"></span>
+      <button id="site-next" class="site-btn" type="button" aria-label="Next site">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 5l7 7-7 7"/>
+        </svg>
+      </button>
+    </nav>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
