@@ -40,7 +40,9 @@ of way. What it cannot do is resolve a standoff -- two drones meeting in a gap
 both hold, safely, forever. After ``safety.hold_replan_s`` the controller
 breaks the tie the same way the shield ranks drones: the higher id gives way,
 first by re-routing around the others and, failing that, by stepping aside off
-the right-of-way drone's path.
+the right-of-way drone's path. If it can do neither, the right-of-way drone
+tries the same two moves around it: which side of a standoff has room to move
+depends on the walls, not the ids.
 """
 
 from __future__ import annotations
@@ -111,6 +113,9 @@ class _Drone:
     #: while it has one. Idle for ``idle_return_s`` sends it home.
     idle_since: float | None = None
     landed: bool = False
+    #: Set once a failed attempt to plan home has been warned about, so a
+    #: return retried every replan warns once, not once a second.
+    warned_no_way_home: bool = False
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -531,8 +536,7 @@ class MissionController:
         tolerance = self._cfg.planner.waypoint_tolerance_m
         hover = self._landing_hover(state)
         if hover is None:
-            _log.debug("drone %d: no reachable hover above its pad yet", state.drone_id)
-            self._hold(state.drone_id)  # retried at the next replan
+            self._no_way_home(state, "no reachable point above its pad to land from")
             return
         # Already in the column below the hover: the take-off column, or one
         # just checked clear, so there is nothing left to plan.
@@ -542,10 +546,28 @@ class MissionController:
             return
         path = self._plan(state.pos, hover)
         if path is None:
-            self._hold(state.drone_id)  # retried at the next replan
+            self._no_way_home(state, f"no path to {hover.round(2).tolist()}")
             return
         self._assign(state.drone_id, DroneTask(state.drone_id, "rth", hover, None, path))
         d.history.clear()
+        d.warned_no_way_home = False
+
+    def _no_way_home(self, state: DroneState, why: str) -> None:
+        """Hold a drone whose return cannot be planned yet; it is retried at the next replan.
+
+        Warned about once per streak: a drone hovering in place for good is
+        otherwise indistinguishable, from the outside, from one about to move.
+        """
+        d = self._drones[state.drone_id]
+        if not d.warned_no_way_home:
+            _log.warning(
+                "drone %d at %s cannot plan its way home (%s); holding and retrying",
+                state.drone_id,
+                state.pos.round(2).tolist(),
+                why,
+            )
+            d.warned_no_way_home = True
+        self._hold(state.drone_id)
 
     def _landing_hover(self, state: DroneState) -> Vec3 | None:
         """Find the lowest point above this drone's pad it can plan to and land from.
@@ -689,8 +711,11 @@ class MissionController:
 
         A ``"map"`` hold means the drone's path now crosses space the map no
         longer calls free: re-plan it. A ``"drone N"`` hold is a standoff, and
-        the higher id of the two gives way -- the same ranking the shield uses,
-        so the drone that yields is always the one without right of way.
+        the higher id of the two gives way first -- the same ranking the
+        shield uses. If it cannot -- boxed in, or parked with no route of its
+        own to change -- the other goes round it instead. Which drone can move
+        depends on where the walls are, not on the ids, and a standoff only
+        one side can break must not wait forever on the side that cannot.
         """
         wait = self._cfg.safety.hold_replan_s
         by_id = {s.drone_id: s for s in live}
@@ -704,16 +729,30 @@ class MissionController:
                 continue
             other = int(reason.split()[-1])
             # A dead drone cannot move out of anyone's way.
-            yielder = drone_id if other not in by_id else max(drone_id, other)
-            blocker = other if yielder == drone_id else drone_id
-            if t - self._drones[yielder].last_yield_t < wait:
-                continue
-            self._drones[yielder].last_yield_t = t
-            _log.info("drone %d gives way to drone %d", yielder, blocker)
-            others = [s.pos for s in live if s.drone_id != yielder]
-            avoid = np.array(others, dtype=np.float64).reshape(-1, 3) if others else None
-            if not self._reroute(t, by_id[yielder], avoid=avoid):
-                self._step_aside(by_id[yielder], by_id.get(blocker))
+            pair = [i for i in (max(drone_id, other), min(drone_id, other)) if i in by_id]
+            if any(t - self._drones[i].last_yield_t < wait for i in pair):
+                continue  # this standoff was just worked on, from its other side
+            for i in pair:
+                self._drones[i].last_yield_t = t
+            for yielder in pair:
+                blocker = other if yielder == drone_id else drone_id
+                _log.info("drone %d gives way to drone %d", yielder, blocker)
+                if self._give_way(t, by_id[yielder], by_id.get(blocker), live):
+                    break
+            else:
+                _log.warning(
+                    "drones %s are in a standoff neither can plan out of; retrying in %.0f s",
+                    " and ".join(str(i) for i in sorted({drone_id, other})),
+                    wait,
+                )
+
+    def _give_way(
+        self, t: float, state: DroneState, blocker: DroneState | None, live: list[DroneState]
+    ) -> bool:
+        """Get ``state`` out of ``blocker``'s way; ``True`` if it now has a move to make."""
+        others = [s.pos for s in live if s.drone_id != state.drone_id]
+        avoid = np.array(others, dtype=np.float64).reshape(-1, 3) if others else None
+        return self._reroute(t, state, avoid=avoid) or self._step_aside(state, blocker)
 
     def _reroute(self, t: float, state: DroneState, avoid: Points | None) -> bool:
         """Re-plan a drone to its current goal, around ``avoid``; ``True`` on success."""
@@ -731,21 +770,22 @@ class MissionController:
         )
         return True
 
-    def _step_aside(self, state: DroneState, blocker: DroneState | None) -> None:
-        """Move off the right-of-way drone's path to the nearest spot that clears it.
+    def _step_aside(self, state: DroneState, blocker: DroneState | None) -> bool:
+        """Move off the other drone's path to the nearest spot that clears it.
 
         The spot must be reachable, at least ``min_separation_m`` plus the
         inflation margin from the blocker and from every point of its remaining
         path, so the blocker can pass without the shield stopping it again.
+        ``False``, with the drone left holding, if there is no such spot.
         """
         grid = self._grid
         if grid is None or blocker is None:
             self._hold(state.drone_id)
-            return
+            return False
         label = int(grid.label_at(state.pos[None, :])[0])
         if label == 0:
             self._hold(state.drone_id)
-            return
+            return False
         cells = grid.centres(grid.labels == label)
         keep_clear = self._keep_clear_points(blocker)
         need = self._cfg.safety.min_separation_m + self._cfg.safety.inflation_m
@@ -753,7 +793,7 @@ class MissionController:
         ok = cells[gaps >= need]
         if len(ok) == 0:
             self._hold(state.drone_id)
-            return
+            return False
         order = np.argsort(np.linalg.norm(ok - state.pos, axis=1))
         avoid = blocker.pos[None, :]
         # Nearest first; a handful of tries covers a spot behind a wall.
@@ -764,8 +804,9 @@ class MissionController:
                     state.drone_id, DroneTask(state.drone_id, "yield", ok[idx], None, path)
                 )
                 self._drones[state.drone_id].history.clear()
-                return
+                return True
         self._hold(state.drone_id)
+        return False
 
     def _keep_clear_points(self, blocker: DroneState) -> Points:
         """Sample the blocker's position and remaining path at planning resolution."""

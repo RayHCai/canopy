@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from itertools import pairwise
 
 import numpy as np
 import pytest
@@ -25,6 +26,40 @@ def test_plan_path_straight_line_in_open_air(
     assert len(path) >= 2
     np.testing.assert_allclose(path[0], start)
     np.testing.assert_allclose(path[-1], goal)
+
+
+def test_plan_path_leaves_the_padding_around_a_drone_it_starts_inside(
+    cfg: Config, clearance: Callable[..., ClearanceMap]
+) -> None:
+    """A drone stopped just outside ``min_separation_m`` of another can still plan out.
+
+    The shield parks a standoff pair about that far apart, which is inside the
+    avoid radius's half-cell padding. Here a wall shuts the one cell leading
+    straight away from the other drone, so a planner that blocked the whole
+    padded ball would find no first step at all.
+    """
+    cm = clearance(boxes=[((-15.0, -20.0, 0.0), (-0.5, 20.0, 12.0))])
+    start = np.array([0.75, 0.25, 3.25])  # a cell centre, west neighbour in the wall
+    other = start + np.array([1.3, -0.8, 0.0])
+    goal = start + np.array([0.0, 5.0, 0.0])
+    separation = cfg.safety.min_separation_m
+    start_gap = float(np.linalg.norm(other - start))
+    cell = cm.voxel * cfg.map.plan_factor
+    assert separation < start_gap < separation + 0.5 * np.sqrt(3.0) * cell
+
+    path = plan_path(
+        start,
+        goal,
+        cm,
+        plan_factor=cfg.map.plan_factor,
+        required_m=cfg.safety.inflation_m,
+        avoid=other[None, :],
+        avoid_radius_m=separation,
+    )
+
+    np.testing.assert_allclose(path[-1], goal)
+    samples = np.vstack([cm.sample_segment(a, b) for a, b in pairwise(path)])
+    assert np.linalg.norm(samples - other, axis=1).min() >= separation
 
 
 def test_planning_grid_labels_open_space_as_one_component(

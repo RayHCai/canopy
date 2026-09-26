@@ -423,6 +423,51 @@ def test_surplus_drone_idles_then_returns_home_mid_explore(
     assert controller.landed == {0, 1, 2}
 
 
+def test_standoff_on_the_way_home_is_broken_and_both_land(
+    cfg: Config,
+    lot: npt.NDArray[np.float64],
+    make_map: Callable[..., MapState],
+) -> None:
+    """Two returning drones parked in each other's way beside a wall both get home.
+
+    Each one's way home passes the other closer than ``min_separation_m``, so
+    the shield holds both. Drone 1, the one that gives way first, starts
+    against the wall and inside the padding of drone 0's avoid radius: the
+    case that used to leave both hovering for good, since drone 1 could plan
+    nowhere and drone 0 was never asked to go round it.
+    """
+    map_state = make_map(boxes=[((-15.0, -20.0, 0.0), (-0.5, 20.0, 12.0))])
+    pads = np.array([[1.0, 8.0, 0.0], [1.0, -8.0, 0.0]])
+    standoff = {0: np.array([2.05, -0.55, 3.25]), 1: np.array([0.75, 0.25, 3.25])}
+    controller = MissionController(cfg, lot, pads)
+    states = {i: DroneState(i, pads[i].copy(), np.zeros(3), 0.0) for i in range(2)}
+
+    dt = 1.0 / cfg.sim.control_hz
+    t = 0.0
+    teleported = False
+    for _ in range(4000):
+        if controller.phase is Phase.EXPLORE and not teleported:
+            # The whole lot is mapped, so the next replan ends exploration and
+            # plans each return from wherever the drones are now.
+            states = {
+                i: replace(s, pos=standoff[i].copy(), vel=np.zeros(3)) for i, s in states.items()
+            }
+            teleported = True
+        targets = controller.step(
+            t, list(states.values()), map_state, map_version=1, coverage_ground_band=0.0
+        )
+        states = _fly_toward_targets(states, targets, dt, cfg.sim.v_max)
+        t += dt
+        if controller.done:
+            break
+
+    assert teleported, "the drones never finished taking off"
+    assert controller.done, f"not home by t={t:.0f} s: {controller.tasks}"
+    assert controller.landed == {0, 1}
+    for i, pad in enumerate(pads):
+        np.testing.assert_allclose(states[i].pos[:2], pad[:2], atol=0.1)
+
+
 @pytest.mark.slow
 def test_landed_covers_every_drone_once_a_full_mission_finishes(
     cfg: Config, tmp_path: Path

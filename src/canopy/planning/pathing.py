@@ -66,7 +66,9 @@ def plan_path(
         passes these when the shield has held a drone for too long: the other
         drones are then parked in its way, and the map alone cannot know that.
     avoid_radius_m
-        Distance to keep from every ``avoid`` point (``min_separation_m``).
+        Distance to keep from every ``avoid`` point (``min_separation_m``). A
+        start already nearer than that to a point, padding included, only has
+        to get no nearer: see :func:`_near_points`.
 
     Returns
     -------
@@ -104,7 +106,9 @@ def plan_path(
     cell = clearance.voxel * plan_factor
     passable = _coarse_passable(clearance, plan_factor, required_m)
     if len(avoid_pts):
-        passable &= ~_near_points(passable.shape, clearance.origin, cell, avoid_pts, avoid_radius_m)
+        passable &= ~_near_points(
+            passable.shape, clearance.origin, cell, avoid_pts, avoid_radius_m, start
+        )
 
     start_idx = _cell_index(start, clearance.origin, cell, passable.shape, "start")
     goal_idx = _cell_index(goal, clearance.origin, cell, passable.shape, "goal")
@@ -295,19 +299,33 @@ def _pool_passable(
 
 
 def _near_points(
-    shape: tuple[int, ...], origin: Vec3, cell: float, points: Points, radius: float
+    shape: tuple[int, ...],
+    origin: Vec3,
+    cell: float,
+    points: Points,
+    radius: float,
+    start: Vec3,
 ) -> npt.NDArray[np.bool_]:
     """Cells that come within ``radius`` of any point.
 
     Padded by the cell's half-diagonal: a raw step between two cell centres
     passes that far from either, and must not graze the radius mid-step.
+
+    Around a point the ``start`` is already inside that padded reach of, the
+    reach shrinks to the start's own distance: cells no nearer than the drone
+    already is stay open. The case is the rule, not the exception -- the
+    shield stops a standoff pair just outside ``radius``, well inside the
+    padding, so the drone asked to give way always starts there. Without
+    this, every cell on its side of the other drone is shut, and if a wall
+    closes the one way straight out, it cannot plan anywhere at all.
     """
     axes = [origin[a] + (np.arange(shape[a]) + 0.5) * cell for a in range(3)]
     centres = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
-    reach = radius + 0.5 * np.sqrt(3.0) * cell
+    padded = radius + 0.5 * np.sqrt(3.0) * cell
+    reach = np.minimum(padded, np.linalg.norm(points - start, axis=1))
     near = np.zeros(shape, dtype=np.bool_)
-    for p in points:  # K is the swarm size; each iteration is a full-grid vector op
-        near |= np.sum((centres - p) ** 2, axis=-1) < reach * reach
+    for p, r in zip(points, reach, strict=True):  # K is the swarm size; each is a grid op
+        near |= np.sum((centres - p) ** 2, axis=-1) < r * r
     return near
 
 
