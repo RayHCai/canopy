@@ -1,0 +1,480 @@
+newmtl drone_shell
+Kd 0.204 0.216 0.235
+Ka 0.071 0.075 0.082
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl drone_black
+Kd 0.094 0.098 0.110
+Ka 0.033 0.034 0.038
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl drone_shell_light
+Kd 0.290 0.306 0.329
+Ka 0.102 0.107 0.115
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl drone_accent
+Kd 0.910 0.471 0.125
+Ka 0.318 0.165 0.044
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl lens_glass
+Kd 0.071 0.118 0.204
+Ka 0.025 0.041 0.071
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 0.9
+
+newmtl drone_metal
+Kd 0.588 0.612 0.635
+Ka 0.206 0.214 0.222
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl prop_dark
+Kd 0.149 0.157 0.173
+Ka 0.052 0.055 0.060
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl led_red
+Kd 0.941 0.196 0.157
+Ka 0.329 0.069 0.055
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl led_green
+Kd 0.235 0.902 0.353
+Ka 0.082 0.316 0.124
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl cam_white
+Kd 0.894 0.902 0.910
+Ka 0.313 0.316 0.318
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl led_white
+Kd 0.922 0.941 0.961
+Ka 0.323 0.329 0.336
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl lidar_window
+Kd 0.157 0.133 0.102
+Ka 0.055 0.047 0.036
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 0.8
+
+newmtl bark
+Kd 0.376 0.306 0.235
+Ka 0.132 0.107 0.082
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl bark_dark
+Kd 0.275 0.220 0.165
+Ka 0.096 0.077 0.058
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl leaf_light
+Kd 0.627 0.808 0.416
+Ka 0.220 0.283 0.145
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl leaf_dark
+Kd 0.392 0.588 0.251
+Ka 0.137 0.206 0.088
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl leaf
+Kd 0.510 0.714 0.322
+Ka 0.178 0.250 0.113
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl wood_dark
+Kd 0.549 0.408 0.275
+Ka 0.192 0.143 0.096
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl wood
+Kd 0.659 0.502 0.337
+Ka 0.231 0.176 0.118
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl wood_gray
+Kd 0.588 0.549 0.486
+Ka 0.206 0.192 0.170
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl wood_light
+Kd 0.745 0.596 0.424
+Ka 0.261 0.209 0.148
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl concrete
+Kd 0.690 0.682 0.659
+Ka 0.242 0.239 0.231
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl shed_siding
+Kd 0.769 0.698 0.588
+Ka 0.269 0.244 0.206
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl shed_trim
+Kd 0.941 0.933 0.902
+Ka 0.329 0.327 0.316
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl shingle
+Kd 0.306 0.290 0.282
+Ka 0.107 0.102 0.099
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl shingle_light
+Kd 0.376 0.361 0.353
+Ka 0.132 0.126 0.124
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl shed_door
+Kd 0.471 0.353 0.251
+Ka 0.165 0.124 0.088
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl galvanized
+Kd 0.604 0.663 0.698
+Ka 0.211 0.232 0.244
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl window_glass
+Kd 0.588 0.745 0.843
+Ka 0.206 0.261 0.295
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 0.6
+
+newmtl core_trim
+Kd 0.227 0.235 0.243
+Ka 0.080 0.082 0.085
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_white
+Kd 0.933 0.933 0.918
+Ka 0.327 0.327 0.321
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_panel
+Kd 0.871 0.875 0.863
+Ka 0.305 0.306 0.302
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_led
+Kd 0.314 0.745 1.000
+Ka 0.110 0.261 0.350
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_white
+Kd 0.941 0.941 0.925
+Ka 0.329 0.329 0.324
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_black
+Kd 0.157 0.157 0.173
+Ka 0.055 0.055 0.060
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_vent
+Kd 0.353 0.361 0.373
+Ka 0.124 0.126 0.130
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl conduit_paint
+Kd 0.616 0.698 0.804
+Ka 0.215 0.244 0.281
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl steel_paint
+Kd 0.553 0.643 0.725
+Ka 0.194 0.225 0.254
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl steel_paint_dark
+Kd 0.439 0.510 0.580
+Ka 0.154 0.178 0.203
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_bezel
+Kd 0.235 0.251 0.275
+Ka 0.082 0.088 0.096
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_ring
+Kd 0.686 0.706 0.725
+Ka 0.240 0.247 0.254
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl label_yellow
+Kd 0.894 0.745 0.157
+Ka 0.313 0.261 0.055
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_face
+Kd 0.910 0.925 0.941
+Ka 0.318 0.324 0.329
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_lcd
+Kd 0.471 0.541 0.431
+Ka 0.165 0.189 0.151
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_glass
+Kd 0.784 0.831 0.910
+Ka 0.275 0.291 0.318
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 0.45
+
+newmtl panel_paint
+Kd 0.608 0.682 0.753
+Ka 0.213 0.239 0.264
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl panel_seam
+Kd 0.322 0.349 0.376
+Ka 0.113 0.122 0.132
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_red
+Kd 0.745 0.157 0.141
+Ka 0.261 0.055 0.049
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl ac_pad
+Kd 0.737 0.729 0.706
+Ka 0.258 0.255 0.247
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl ac_grille
+Kd 0.204 0.204 0.212
+Ka 0.071 0.071 0.074
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl ac_coil
+Kd 0.306 0.290 0.275
+Ka 0.107 0.102 0.096
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl ac_cabinet
+Kd 0.808 0.784 0.722
+Ka 0.283 0.275 0.253
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl ac_fan
+Kd 0.118 0.118 0.125
+Ka 0.041 0.041 0.044
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl foam_black
+Kd 0.141 0.141 0.149
+Ka 0.049 0.049 0.052
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl copper
+Kd 0.722 0.451 0.200
+Ka 0.253 0.158 0.070
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl gas_meter_body
+Kd 0.690 0.698 0.690
+Ka 0.242 0.244 0.242
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl gas_meter_dark
+Kd 0.376 0.384 0.392
+Ka 0.132 0.135 0.137
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl dial_dark
+Kd 0.157 0.157 0.173
+Ka 0.055 0.055 0.060
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl gas_pipe
+Kd 0.816 0.659 0.165
+Ka 0.285 0.231 0.058
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl gas_iron
+Kd 0.502 0.510 0.518
+Ka 0.176 0.178 0.181
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+

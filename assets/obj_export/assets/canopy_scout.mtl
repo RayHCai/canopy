@@ -1,0 +1,96 @@
+newmtl drone_shell
+Kd 0.204 0.216 0.235
+Ka 0.071 0.075 0.082
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl drone_black
+Kd 0.094 0.098 0.110
+Ka 0.033 0.034 0.038
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl drone_shell_light
+Kd 0.290 0.306 0.329
+Ka 0.102 0.107 0.115
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl drone_accent
+Kd 0.910 0.471 0.125
+Ka 0.318 0.165 0.044
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl lens_glass
+Kd 0.071 0.118 0.204
+Ka 0.025 0.041 0.071
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 0.9
+
+newmtl drone_metal
+Kd 0.588 0.612 0.635
+Ka 0.206 0.214 0.222
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl prop_dark
+Kd 0.149 0.157 0.173
+Ka 0.052 0.055 0.060
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl led_red
+Kd 0.941 0.196 0.157
+Ka 0.329 0.069 0.055
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl led_green
+Kd 0.235 0.902 0.353
+Ka 0.082 0.316 0.124
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl cam_white
+Kd 0.894 0.902 0.910
+Ka 0.313 0.316 0.318
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl led_white
+Kd 0.922 0.941 0.961
+Ka 0.323 0.329 0.336
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl lidar_window
+Kd 0.157 0.133 0.102
+Ka 0.055 0.047 0.036
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 0.8
+

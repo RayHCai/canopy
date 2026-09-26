@@ -1,0 +1,663 @@
+# ---------------------------------------------------------------------------
+# Canopy model library: the database of 3D models the field generator draws
+# from, plus the generation rules that place them.
+#
+# This file is the extension point. Adding a prop to generated properties
+# should not require touching Python:
+#
+#   1. Put the mesh under assets/obj_export/ (or anywhere under assets/).
+#   2. Add an entry under `models:` naming the file, its semantic class, the
+#      role `tags` it can fill, and how much to vary its scale.
+#   3. If it belongs somewhere no existing rule puts things, add a `roles:`
+#      entry -- and only then write a rule in worldgen/placement.py under
+#      @register_rule("...").
+#
+# The authored library is Y-up, in metres, with each model's origin at its
+# ground or wall contact point, so `up_axis: y` and `anchor: base` are the
+# defaults. Models are used at their authored size: `scale` is a uniform
+# multiplier, not a target extent. (A `parts:` model, built from primitives,
+# has no authored size, so it uses `size_x/y/z` target extents instead.)
+#
+# Units are metres. The world frame is Z-up with the origin at lot centre and
+# the ground at z = 0.
+# ---------------------------------------------------------------------------
+version: 1
+
+# ---------------------------------------------------------------------------
+# Material -> semantic class.
+#
+# One authored mesh carries many materials, and the material name is the only
+# semantic label the art gives us. Mapping it to `Cls` is what turns a single
+# house mesh into separately-classified wall, roof, window, door and garage
+# objects -- which is what the coverage metric, the reveal palette and the site
+# solver all read. A material not listed here falls back to its model's `cls`,
+# so only the exceptions need an entry.
+# ---------------------------------------------------------------------------
+materials:
+  # House shell.
+  roof_shingle: ROOF
+  shingle: ROOF
+  shingle_light: ROOF
+  gutter: ROOF
+  gutter_gray: ROOF
+  window_glass: WINDOW
+  door_red: DOOR
+  shed_door: DOOR
+  garage_door: GARAGE_DOOR
+  # The house slab is horizontal poured concrete. DRIVEWAY rather than WALL
+  # both because grey is the honest colour and because the ground-band coverage
+  # metric counts WALL area a drone is expected to see from the side; a slab
+  # would pad that denominator with a surface no orbit can observe.
+  slab: DRIVEWAY
+  concrete: DRIVEWAY
+  # Yard.
+  lawn: GROUND
+  mulch: GROUND
+  fence_wood: FENCE
+  wood: FENCE
+  wood_dark: FENCE
+  wood_gray: FENCE
+  wood_light: FENCE
+
+# ---------------------------------------------------------------------------
+# Roles: the slots in a property. Each names a placement rule, how many to
+# place, and the tag that selects candidate models.
+#
+# Document order is placement order, and it is load-bearing: the house must be
+# sited before anything that measures from a wall, and the meter before the
+# bushes, so that a bush can be made to occlude it.
+# ---------------------------------------------------------------------------
+roles:
+  ground:
+    tag: ground
+    rule: lot_plane
+    count: {fixed: 1}
+
+  house:
+    tag: house
+    rule: house_lot
+    count: {fixed: 1}
+    params:
+      lot_margin_m: 2.0
+      front_yard_m: 6.0
+      # Two house styles, chosen per seed. The authored shell brings real brick,
+      # windows, doors and a garage but is one fixed shape; the procedural
+      # massing gives genuinely varying dimensions and L or T plans.
+      p_authored: 0.4
+      authored_tag: house_authored
+      mass_tag: house_mass
+      wing_tag: house_wing
+      roof_tag: house_roof
+      wings: [0, 2]
+      wing_overlap_m: 0.3
+      eave_overhang_m: 0.4
+      pitch_deg: 30.0
+
+  # The electrical service, placed as one connected group rather than as
+  # independent props: the meter, its panel and the conduit between them only
+  # make sense together. Every property gets one.
+  service:
+    tag: meter
+    rule: service_assembly
+    count: {fixed: 1}
+    params:
+      meter_tag: meter
+      panel_tag: panel
+      nipple_tag: conduit_nipple
+      riser_tag: conduit_riser
+      straight_tag: conduit_straight
+      meter_bottom_m: 1.25
+      panel_bottom_m: 0.75
+      panel_offset_m: [0.60, 1.05]
+      nipple_height_m: 1.46
+      riser_offset_m: 0.85
+      riser_bottom_m: 0.37
+      drop_offset_m: 0.35
+      corner_clearance_m: 1.2
+      standoff_m: 0.02
+      # Ten of the twelve authored homes run meter -> nipple -> breaker panel;
+      # the other two go meter -> LB riser -> through the wall.
+      p_panel: 0.82
+      p_service_drop: 0.55
+
+  gas_meter:
+    tag: gas_meter
+    rule: wall_mount
+    # 60% of properties, per spec.md: a second meter of the same shape family
+    # is what stops meter detection from being trivial.
+    count: {range: [0, 1], p: 0.6}
+    params:
+      bottom_height_m: 0.0
+      corner_clearance_m: 1.0
+      standoff_m: 0.02
+      avoid_meter_wall: true
+
+  ac_unit:
+    tag: ac_unit
+    rule: wall_adjacent
+    count: {range: [1, 2]}
+    params: {standoff_m: 0.5, corner_clearance_m: 1.0}
+
+  bush:
+    tag: bush
+    rule: foundation_band
+    count: {per_10m_wall_cfg: bush_density_per_10m}
+    params: {standoff_m: [0.3, 1.2], occluder_standoff_m: [0.6, 1.0]}
+
+  tree:
+    tag: tree
+    rule: yard_scatter
+    count: {cfg_range: trees}
+    params: {house_clearance_m: 2.0, lot_margin_m: 1.5, first_near_house: true}
+
+  shed:
+    tag: shed
+    rule: yard_scatter
+    count: {range: [0, 2]}
+    params:
+      house_clearance_m: 2.5
+      lot_margin_m: 2.0
+      # A shed belongs behind the house, not on the elevation the survey
+      # photographs.
+      back_yard_only: true
+
+  # `count` here is whether the property is fenced at all, not a panel count:
+  # the rule works out how many panels each side needs.
+  fence:
+    tag: fence
+    rule: fence_perimeter
+    count: {range: [0, 1], p: 0.55}
+    params:
+      panel_tag: fence
+      # The enclosed yard varies in size rather than always hugging the lot line.
+      inset_m: [1.0, 4.0]
+      p_front_open: 0.8
+
+  # Windows, a front door and sometimes a garage door on a procedural house.
+  # The authored shell has its own, so the rule places nothing there. Last of
+  # the surveyed roles on purpose: the openings fit around the meter and the
+  # conduit already on the walls, and running last leaves every other object's
+  # random draws, and so every existing seed's layout, unchanged. `count` is
+  # whether to glaze at all; the rule works out how many openings each wall
+  # takes.
+  openings:
+    tag: window
+    rule: facade_openings
+    count: {fixed: 1}
+    params:
+      window_tag: window
+      door_tag: entry_door
+      garage_tag: garage_door
+      storey_m: 2.8
+      sill_m: 0.9
+      window_height_m: 1.2
+      window_width_m: [0.9, 1.3]
+      # Centre to centre along a wall.
+      window_spacing_m: [2.6, 3.4]
+      door_size_m: [1.0, 2.1]
+      garage_size_m: [2.8, 2.2]
+      p_garage: 0.5
+      corner_clearance_m: 0.6
+      # Kept clear either side of wall-mounted equipment and of each door.
+      equipment_clearance_m: 0.3
+      # Centred on the wall plane, so each panel stands half this proud of it.
+      depth_m: 0.05
+
+  # -- background scenery -----------------------------------------------------
+  # The neighbourhood: a street of lawns and houses around the surveyed lot.
+  # `background: true` roles draw from a constant-seed generator, not the
+  # property's, so this is the same backdrop for every seed and never perturbs
+  # the surveyed lot's random stream. They are kept last anyway, so the
+  # surveyed lot's object ids come first.
+  neighbour_ground:
+    tag: neighbour_ground
+    rule: neighbour_lot
+    # One lawn per lot, so the count is the length of `lots`.
+    count: {fixed: 12}
+    params:
+      # [column, row] in lot-size units; the surveyed lot is [0, 0]. Row 0 is
+      # the surveyed side of the street, row 1 backs onto it, row -1 is across
+      # the street. Anchored so every background role reads the same grid.
+      lots: &neighbour_lots
+        [[-2, 0], [-1, 0], [1, 0], [2, 0],
+         [-1, 1], [0, 1], [1, 1],
+         [-2, -1], [-1, -1], [0, -1], [1, -1], [2, -1]]
+      # The near sidewalk, street and far sidewalk below: 1.5 + 7.5 + 1.5 m.
+      street_gap_m: &street_gap_m 10.5
+    background: true
+
+  neighbour_house:
+    tag: neighbour_house
+    rule: neighbour_house
+    count: {fixed: 12}
+    params:
+      lots: *neighbour_lots
+      street_gap_m: *street_gap_m
+      lot_margin_m: 2.0
+      min_gap_m: 4.0
+      front_yard_m: [5.0, 8.0]
+    background: true
+
+  sidewalk:
+    tag: sidewalk
+    rule: frontage_strip
+    # Near and far kerbs of the street below: the near walk abuts the front lot
+    # line, where the launch pad sits 1.5 m inside it.
+    count: {fixed: 2}
+    params: {setback_m: [0.0, 9.0], depth_m: 1.5, lots: *neighbour_lots}
+    background: true
+
+  street:
+    tag: street
+    rule: frontage_strip
+    count: {fixed: 1}
+    params: {setback_m: [1.5], depth_m: 7.5, lots: *neighbour_lots}
+    background: true
+
+  # A double yellow centre line: two 12 cm strips 10 cm apart, centred on the
+  # street's 5.25 m centreline and lifted 2 cm clear of the asphalt.
+  street_line:
+    tag: street_line
+    rule: frontage_strip
+    count: {fixed: 2}
+    params: {setback_m: [5.08, 5.30], depth_m: 0.12, z_m: 0.02, lots: *neighbour_lots}
+    background: true
+
+# ---------------------------------------------------------------------------
+# Models.
+#
+# `weight` is the relative odds of being drawn for a role (default 1.0).
+# `scale` is a uniform multiplier on the authored size (default [1.0, 1.0]).
+# `max_edge_m` subdivides after scaling so the grayscale-to-colour reveal wipes
+# across a surface instead of popping whole objects; omit it for art that is
+# already dense, because subdividing a tree to 0.2 m alone costs 46k triangles.
+# ---------------------------------------------------------------------------
+models:
+  # -- ground ---------------------------------------------------------------
+  lot_ground:
+    cls: GROUND
+    tags: [ground]
+    # Generated rather than authored: its extents come from worldgen.lot_m, so
+    # the lot stays a config tunable. Two triangles, subdivided to 1 m so the
+    # reveal has something to wipe across.
+    parts:
+      - {kind: plane}
+    max_edge_m: 1.0
+
+  yard_authored:
+    cls: GROUND
+    # Tagged out of the default ground role on purpose. This is the authored
+    # 40 x 40 m yard from the home scenes, complete with walks, driveway and
+    # fence -- but they are positioned for the house at its authored pose, so it
+    # only lines up if the house is left unmoved. Point the `ground` role's tag
+    # at `yard_authored` to use it.
+    tags: [yard_authored]
+    mesh: obj_export/homes/home_01/home_01_pre_install.obj
+    object: yard
+
+  # -- house ----------------------------------------------------------------
+  house_brick_two_story:
+    cls: WALL
+    tags: [house, house_authored]
+    mesh: obj_export/homes/home_01/home_01_pre_install.obj
+    # One `o` group out of a whole authored home scene: the shell only, without
+    # the home's baked-in meter, bushes and trees, which this generator places
+    # itself. All twelve authored homes share this identical shell.
+    object: house
+    # 14.90 x 11.02 x 5.36 m as authored. Uniform scale is the only size
+    # variation available from a single shell; a second shell would be one more
+    # entry here.
+    scale: [0.85, 1.15]
+    # Quarter turns only, so the footprint stays axis-aligned -- the site
+    # solver's cost map is built in world axes.
+    yaw_choices_deg: [0, 90, 180, 270]
+    max_edge_m: 0.4
+
+  # Procedural massing. A house is a union of these blocks, so each one is a
+  # plain box and the variety comes from their dimensions and arrangement.
+  # `max_edge_m` is explicit on every generated model: a `parts` model with none
+  # falls back to worldgen.max_edge_m (0.2 m), which costs six figures of
+  # triangles on a surface this size.
+  house_mass_one_story:
+    cls: WALL
+    tags: [house, house_mass]
+    weight: 1.0
+    size_x: [8.0, 14.0]
+    size_y: [7.0, 11.0]
+    size_z: [3.0, 3.2]
+    parts:
+      - {kind: box}
+    max_edge_m: 0.5
+
+  house_mass_two_story:
+    cls: WALL
+    tags: [house, house_mass]
+    weight: 1.0
+    size_x: [8.0, 13.0]
+    size_y: [7.0, 10.0]
+    size_z: [5.6, 5.9]
+    parts:
+      - {kind: box}
+    max_edge_m: 0.5
+
+  house_wing:
+    cls: WALL
+    # Wings stay single-storey, which is what makes a massed plan read as a
+    # house with an extension rather than as two houses stuck together.
+    tags: [house, house_wing]
+    size_x: [4.0, 8.0]
+    size_y: [4.0, 7.0]
+    size_z: [2.8, 3.2]
+    parts:
+      - {kind: box}
+    max_edge_m: 0.5
+
+  roof_gable:
+    cls: ROOF
+    tags: [house_roof]
+    weight: 4.0
+    # No size_z: the rule derives the height from the pitch and the span.
+    parts:
+      - {kind: gable_prism}
+    max_edge_m: 0.5
+
+  roof_flat:
+    cls: ROOF
+    tags: [house_roof]
+    weight: 1.0
+    # A declared size_z opts out of the pitch calculation: this is a parapet,
+    # not a slope.
+    size_z: [0.2, 0.3]
+    parts:
+      - {kind: box}
+    max_edge_m: 0.5
+
+  # Opening panels for procedural houses. The facade_openings rule sizes each
+  # one itself, so none declares a size. Subdivided like the walls they sit on
+  # so the reveal wipes across them too.
+  window_pane:
+    cls: WINDOW
+    tags: [window]
+    parts:
+      - {kind: box}
+    max_edge_m: 0.5
+
+  entry_door:
+    cls: DOOR
+    tags: [entry_door]
+    parts:
+      - {kind: box}
+    max_edge_m: 0.5
+
+  garage_door_panel:
+    cls: GARAGE_DOOR
+    tags: [garage_door]
+    parts:
+      - {kind: box}
+    # A painted sectional door, not the timber colour the class shares with DOOR.
+    color: [232, 230, 224]
+    max_edge_m: 0.5
+
+  # -- service equipment ----------------------------------------------------
+  electric_meter:
+    cls: METER
+    tags: [meter]
+    mesh: obj_export/assets/electric_meter.obj
+    # Authored against a wall: origin on the wall face at the unit's underside,
+    # body projecting along native +Z.
+    face_axis: "+z"
+
+  gas_meter:
+    cls: GAS_METER
+    tags: [gas_meter]
+    mesh: obj_export/assets/gas_meter.obj
+    face_axis: "+z"
+
+  ac_condenser_unit:
+    cls: AC_UNIT
+    tags: [ac_unit]
+    mesh: obj_export/assets/ac_condenser_unit.obj
+    scale: [0.9, 1.1]
+    face_axis: "+z"
+
+  breaker_panel:
+    cls: PANEL
+    tags: [panel]
+    mesh: obj_export/assets/breaker_panel.obj
+    face_axis: "+z"
+
+  conduit_nipple:
+    cls: CONDUIT
+    tags: [conduit_nipple]
+    mesh: obj_export/assets/conduit_nipple.obj
+    face_axis: "+z"
+
+  conduit_lb_riser:
+    cls: CONDUIT
+    tags: [conduit_riser]
+    mesh: obj_export/assets/conduit_lb_riser.obj
+    face_axis: "+z"
+
+  conduit_straight:
+    cls: CONDUIT
+    tags: [conduit_straight]
+    mesh: obj_export/assets/conduit_straight.obj
+    face_axis: "+z"
+
+  # -- outbuildings and boundary --------------------------------------------
+  shed:
+    cls: SHED
+    tags: [shed]
+    mesh: obj_export/assets/shed.obj
+    scale: [0.9, 1.15]
+    face_axis: "+z"
+    # An outbuilding is one thing to the survey: it is a flight obstacle and
+    # never a battery site. Without these overrides the library-wide map would
+    # read its concrete pad as a driveway, its trim as a fence and its roof as
+    # the house roof, all of which would mislead the site solver.
+    materials:
+      concrete: SHED
+      wood_dark: SHED
+      shingle: SHED
+      shingle_light: SHED
+      shed_door: SHED
+      shed_siding: SHED
+      shed_trim: SHED
+      window_glass: SHED
+      galvanized: SHED
+      drone_black: SHED
+
+  fence_panel:
+    cls: FENCE
+    tags: [fence]
+    mesh: obj_export/assets/fence_panel.obj
+    # The fence rule stretches each panel's width to divide its side exactly,
+    # so no scale range here.
+    face_axis: "+z"
+
+  # -- vegetation -----------------------------------------------------------
+  bush_small:
+    cls: BUSH
+    tags: [bush]
+    mesh: obj_export/assets/bush_small.obj
+    # Authored at 1.00 x 0.95 x 0.66 m; this spans the spec's 0.6 to 1.6 m
+    # width band.
+    scale: [0.6, 1.6]
+
+  tree:
+    cls: TREE
+    tags: [tree]
+    mesh: obj_export/assets/tree.obj
+    # Authored at 5.49 x 5.72 m tall.
+    scale: [0.75, 1.25]
+
+  # -- background scenery -----------------------------------------------------
+  neighbour_ground:
+    cls: GROUND
+    tags: [neighbour_ground]
+    # Coarse on purpose: background is never revealed, so there is nothing to
+    # wipe across it and no reason to spend triangles subdividing it. The
+    # explicit edge matters: a `parts` model without one falls back to
+    # worldgen.max_edge_m (0.2 m), which is 131k triangles per neighbour lawn.
+    parts:
+      - {kind: plane}
+    max_edge_m: 10.0
+
+  # Neighbour houses are primitives, a few hundred triangles each against the
+  # authored shell's thousands: windows, a front door, overhanging eaves and a
+  # chimney are enough to read as a house from the air, and they are backdrop
+  # and occluders, never surveyed, so finer detail would cost frame time for
+  # nothing. They are never subdivided either: a max_edge_m longer than any
+  # edge skips it, where omitting it would fall back to worldgen.max_edge_m.
+  #
+  # Authoring conventions, in the normalised unit box:
+  #   - The front, with the door, is -y. The neighbour_house rule turns it to
+  #     face the lot's street, so these carry no yaw of their own.
+  #   - Walls fill x and y over [-0.5, 0.5]; the roof overhangs past them, and
+  #     size_x/y/z are the whole model's extents, eaves included.
+  #   - Openings are thin boxes centred on the wall plane, so they stand a few
+  #     centimetres proud of it rather than z-fighting with it.
+  #   - Every part's `at` is its centre, the gable prism included, so a roof
+  #     on walls of height h with pitch height r sits at z = h + r / 2.
+  #   - A chimney is `concrete`, which the library maps to paving grey.
+  neighbour_ranch:
+    cls: WALL
+    tags: [neighbour_house]
+    parts:
+      - {kind: box, size: [1.0, 1.0, 0.55]}
+      - {kind: gable_prism, size: [1.05, 1.14, 0.45], at: [0.0, 0.0, 0.775], material: roof_shingle}
+      - {kind: box, size: [0.05, 0.07, 0.36], at: [-0.30, 0.16, 0.80], material: concrete}
+      # Front: two windows, the door, and a two-car garage door.
+      - {kind: box, size: [0.10, 0.012, 0.20], at: [-0.38, -0.5, 0.30], material: window_glass}
+      - {kind: box, size: [0.10, 0.012, 0.20], at: [-0.22, -0.5, 0.30], material: window_glass}
+      - {kind: box, size: [0.07, 0.012, 0.42], at: [-0.07, -0.5, 0.21], material: door_red}
+      - {kind: box, size: [0.30, 0.012, 0.42], at: [0.26, -0.5, 0.21], material: garage_door}
+      # Back and sides.
+      - {kind: box, size: [0.10, 0.012, 0.20], at: [-0.30, 0.5, 0.30], material: window_glass}
+      - {kind: box, size: [0.10, 0.012, 0.20], at: [0.00, 0.5, 0.30], material: window_glass}
+      - {kind: box, size: [0.10, 0.012, 0.20], at: [0.30, 0.5, 0.30], material: window_glass}
+      - {kind: box, size: [0.012, 0.14, 0.20], at: [-0.5, 0.0, 0.30], material: window_glass}
+      - {kind: box, size: [0.012, 0.14, 0.20], at: [0.5, 0.15, 0.30], material: window_glass}
+    size_x: [13.0, 15.0]
+    size_y: [9.0, 10.0]
+    size_z: [5.0, 5.4]
+    color: [185, 180, 170]
+    max_edge_m: 100.0
+
+  neighbour_two_story:
+    cls: WALL
+    tags: [neighbour_house]
+    parts:
+      - {kind: box, size: [1.0, 1.0, 0.7]}
+      - {kind: gable_prism, size: [1.06, 1.12, 0.3], at: [0.0, 0.0, 0.85], material: roof_shingle}
+      - {kind: box, size: [0.06, 0.08, 0.30], at: [0.30, 0.18, 0.88], material: concrete}
+      # A shingled canopy over the front door.
+      - {kind: box, size: [0.26, 0.07, 0.015], at: [0.0, -0.535, 0.315], material: roof_shingle}
+      - {kind: box, size: [0.09, 0.012, 0.29], at: [0.0, -0.5, 0.145], material: door_red}
+      # Front: ground floor either side of the door, three above.
+      - {kind: box, size: [0.14, 0.012, 0.15], at: [-0.28, -0.5, 0.19], material: window_glass}
+      - {kind: box, size: [0.14, 0.012, 0.15], at: [0.28, -0.5, 0.19], material: window_glass}
+      - {kind: box, size: [0.12, 0.012, 0.14], at: [-0.30, -0.5, 0.52], material: window_glass}
+      - {kind: box, size: [0.12, 0.012, 0.14], at: [0.00, -0.5, 0.52], material: window_glass}
+      - {kind: box, size: [0.12, 0.012, 0.14], at: [0.30, -0.5, 0.52], material: window_glass}
+      # Back.
+      - {kind: box, size: [0.14, 0.012, 0.15], at: [-0.25, 0.5, 0.19], material: window_glass}
+      - {kind: box, size: [0.14, 0.012, 0.15], at: [0.25, 0.5, 0.19], material: window_glass}
+      - {kind: box, size: [0.12, 0.012, 0.14], at: [-0.25, 0.5, 0.52], material: window_glass}
+      - {kind: box, size: [0.12, 0.012, 0.14], at: [0.25, 0.5, 0.52], material: window_glass}
+      # Sides, one per floor.
+      - {kind: box, size: [0.012, 0.14, 0.15], at: [-0.5, 0.0, 0.19], material: window_glass}
+      - {kind: box, size: [0.012, 0.14, 0.14], at: [-0.5, 0.0, 0.52], material: window_glass}
+      - {kind: box, size: [0.012, 0.14, 0.15], at: [0.5, 0.0, 0.19], material: window_glass}
+      - {kind: box, size: [0.012, 0.14, 0.14], at: [0.5, 0.0, 0.52], material: window_glass}
+    size_x: [10.0, 11.5]
+    size_y: [9.0, 10.0]
+    size_z: [7.5, 7.8]
+    color: [170, 175, 180]
+    max_edge_m: 100.0
+
+  # A wide two-storey with a full-width front porch on posts.
+  neighbour_colonial:
+    cls: WALL
+    tags: [neighbour_house]
+    parts:
+      - {kind: box, size: [1.0, 0.86, 0.68], at: [0.0, 0.07, 0.34]}
+      - {kind: gable_prism, size: [1.05, 0.98, 0.32], at: [0.0, 0.07, 0.84], material: roof_shingle}
+      - {kind: box, size: [0.05, 0.08, 0.95], at: [-0.525, 0.12, 0.475], material: concrete}
+      # Porch roof on four posts, across the front.
+      - {kind: box, size: [0.72, 0.14, 0.02], at: [0.0, -0.43, 0.33], material: roof_shingle}
+      - {kind: cylinder, size: [0.02, 0.02, 0.32], at: [-0.34, -0.48, 0.16]}
+      - {kind: cylinder, size: [0.02, 0.02, 0.32], at: [-0.12, -0.48, 0.16]}
+      - {kind: cylinder, size: [0.02, 0.02, 0.32], at: [0.12, -0.48, 0.16]}
+      - {kind: cylinder, size: [0.02, 0.02, 0.32], at: [0.34, -0.48, 0.16]}
+      - {kind: box, size: [0.08, 0.012, 0.28], at: [0.0, -0.36, 0.14], material: door_red}
+      # Front: two either side of the door, four above.
+      - {kind: box, size: [0.10, 0.012, 0.15], at: [-0.34, -0.36, 0.17], material: window_glass}
+      - {kind: box, size: [0.10, 0.012, 0.15], at: [-0.18, -0.36, 0.17], material: window_glass}
+      - {kind: box, size: [0.10, 0.012, 0.15], at: [0.18, -0.36, 0.17], material: window_glass}
+      - {kind: box, size: [0.10, 0.012, 0.15], at: [0.34, -0.36, 0.17], material: window_glass}
+      - {kind: box, size: [0.09, 0.012, 0.14], at: [-0.36, -0.36, 0.52], material: window_glass}
+      - {kind: box, size: [0.09, 0.012, 0.14], at: [-0.12, -0.36, 0.52], material: window_glass}
+      - {kind: box, size: [0.09, 0.012, 0.14], at: [0.12, -0.36, 0.52], material: window_glass}
+      - {kind: box, size: [0.09, 0.012, 0.14], at: [0.36, -0.36, 0.52], material: window_glass}
+      # Back and the chimney-free side.
+      - {kind: box, size: [0.10, 0.012, 0.15], at: [-0.25, 0.5, 0.17], material: window_glass}
+      - {kind: box, size: [0.10, 0.012, 0.15], at: [0.25, 0.5, 0.17], material: window_glass}
+      - {kind: box, size: [0.09, 0.012, 0.14], at: [-0.25, 0.5, 0.52], material: window_glass}
+      - {kind: box, size: [0.09, 0.012, 0.14], at: [0.25, 0.5, 0.52], material: window_glass}
+      - {kind: box, size: [0.012, 0.14, 0.14], at: [0.5, 0.07, 0.52], material: window_glass}
+    size_x: [12.0, 13.5]
+    size_y: [10.0, 11.0]
+    size_z: [7.6, 8.0]
+    color: [218, 214, 202]
+    max_edge_m: 100.0
+
+  # A small cottage under a steep roof, with an attic window in each gable and
+  # a chimney up the outside of one end.
+  neighbour_cottage:
+    cls: WALL
+    tags: [neighbour_house]
+    parts:
+      - {kind: box, size: [1.0, 1.0, 0.45]}
+      - {kind: gable_prism, size: [1.08, 1.10, 0.55], at: [0.0, 0.0, 0.725], material: roof_shingle}
+      - {kind: box, size: [0.06, 0.12, 0.95], at: [0.55, 0.0, 0.475], material: concrete}
+      - {kind: box, size: [0.09, 0.012, 0.34], at: [-0.12, -0.5, 0.17], material: door_red}
+      - {kind: box, size: [0.16, 0.012, 0.16], at: [0.2, -0.5, 0.24], material: window_glass}
+      - {kind: box, size: [0.16, 0.012, 0.16], at: [-0.25, 0.5, 0.24], material: window_glass}
+      - {kind: box, size: [0.16, 0.012, 0.16], at: [0.2, 0.5, 0.24], material: window_glass}
+      - {kind: box, size: [0.012, 0.18, 0.16], at: [-0.5, -0.2, 0.24], material: window_glass}
+      - {kind: box, size: [0.012, 0.18, 0.16], at: [-0.5, 0.2, 0.24], material: window_glass}
+      # Attic windows, on the gable ends where the roof overhangs the walls.
+      - {kind: box, size: [0.012, 0.14, 0.12], at: [-0.54, 0.0, 0.62], material: window_glass}
+      - {kind: box, size: [0.012, 0.10, 0.10], at: [0.54, -0.2, 0.58], material: window_glass}
+    size_x: [9.0, 10.0]
+    size_y: [8.0, 9.0]
+    size_z: [6.2, 6.8]
+    color: [165, 180, 150]
+    max_edge_m: 100.0
+
+  street_asphalt:
+    cls: DRIVEWAY
+    tags: [street]
+    # Paved ground, so DRIVEWAY like the slab; darker than concrete so the
+    # street reads as a street.
+    parts:
+      - {kind: plane}
+    color: [70, 72, 76]
+    max_edge_m: 100.0
+
+  street_line:
+    cls: DRIVEWAY
+    tags: [street_line]
+    # Paint on the street, so the street's class in road-marking yellow.
+    parts:
+      - {kind: plane}
+    color: [226, 184, 40]
+    max_edge_m: 100.0
+
+  sidewalk_concrete:
+    cls: DRIVEWAY
+    tags: [sidewalk]
+    parts:
+      - {kind: plane}
+    max_edge_m: 100.0

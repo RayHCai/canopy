@@ -1,0 +1,72 @@
+newmtl core_trim
+Kd 0.227 0.235 0.243
+Ka 0.080 0.082 0.085
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_white
+Kd 0.933 0.933 0.918
+Ka 0.327 0.327 0.321
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_panel
+Kd 0.871 0.875 0.863
+Ka 0.305 0.306 0.302
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_led
+Kd 0.314 0.745 1.000
+Ka 0.110 0.261 0.350
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_white
+Kd 0.941 0.941 0.925
+Ka 0.329 0.329 0.324
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_black
+Kd 0.157 0.157 0.173
+Ka 0.055 0.055 0.060
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl core_vent
+Kd 0.353 0.361 0.373
+Ka 0.124 0.126 0.130
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl galvanized
+Kd 0.604 0.663 0.698
+Ka 0.211 0.232 0.244
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl conduit_paint
+Kd 0.616 0.698 0.804
+Ka 0.215 0.244 0.281
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+

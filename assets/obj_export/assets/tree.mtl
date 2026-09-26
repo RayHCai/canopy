@@ -1,0 +1,40 @@
+newmtl bark
+Kd 0.376 0.306 0.235
+Ka 0.132 0.107 0.082
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl bark_dark
+Kd 0.275 0.220 0.165
+Ka 0.096 0.077 0.058
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl leaf_light
+Kd 0.627 0.808 0.416
+Ka 0.220 0.283 0.145
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl leaf_dark
+Kd 0.392 0.588 0.251
+Ka 0.137 0.206 0.088
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl leaf
+Kd 0.510 0.714 0.322
+Ka 0.178 0.250 0.113
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+

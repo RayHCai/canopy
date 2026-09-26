@@ -1,0 +1,64 @@
+newmtl panel_paint
+Kd 0.608 0.682 0.753
+Ka 0.213 0.239 0.264
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl steel_paint_dark
+Kd 0.439 0.510 0.580
+Ka 0.154 0.178 0.203
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl panel_seam
+Kd 0.322 0.349 0.376
+Ka 0.113 0.122 0.132
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl galvanized
+Kd 0.604 0.663 0.698
+Ka 0.211 0.232 0.244
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl label_white
+Kd 0.941 0.941 0.925
+Ka 0.329 0.329 0.324
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_black
+Kd 0.157 0.157 0.173
+Ka 0.055 0.055 0.060
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_yellow
+Kd 0.894 0.745 0.157
+Ka 0.313 0.261 0.055
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_red
+Kd 0.745 0.157 0.141
+Ka 0.261 0.055 0.049
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+

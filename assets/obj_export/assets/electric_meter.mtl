@@ -1,0 +1,96 @@
+newmtl steel_paint
+Kd 0.553 0.643 0.725
+Ka 0.194 0.225 0.254
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl steel_paint_dark
+Kd 0.439 0.510 0.580
+Ka 0.154 0.178 0.203
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl galvanized
+Kd 0.604 0.663 0.698
+Ka 0.211 0.232 0.244
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl conduit_paint
+Kd 0.616 0.698 0.804
+Ka 0.215 0.244 0.281
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_bezel
+Kd 0.235 0.251 0.275
+Ka 0.082 0.088 0.096
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_ring
+Kd 0.686 0.706 0.725
+Ka 0.240 0.247 0.254
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+
+newmtl label_yellow
+Kd 0.894 0.745 0.157
+Ka 0.313 0.261 0.055
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_face
+Kd 0.910 0.925 0.941
+Ka 0.318 0.324 0.329
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_lcd
+Kd 0.471 0.541 0.431
+Ka 0.165 0.189 0.151
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_black
+Kd 0.157 0.157 0.173
+Ka 0.055 0.055 0.060
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_white
+Kd 0.941 0.941 0.925
+Ka 0.329 0.329 0.324
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl meter_glass
+Kd 0.784 0.831 0.910
+Ka 0.275 0.291 0.318
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 0.45
+

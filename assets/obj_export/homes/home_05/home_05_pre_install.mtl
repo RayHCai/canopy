@@ -1,0 +1,378 @@
+newmtl slab
+Kd 0.667 0.659 0.635
+Ka 0.233 0.231 0.222
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl brick
+Kd 0.824 0.737 0.596
+Ka 0.288 0.258 0.209
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl roof_shingle
+Kd 0.306 0.290 0.275
+Ka 0.107 0.102 0.096
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl gutter
+Kd 0.925 0.925 0.910
+Ka 0.324 0.324 0.318
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl trim_white
+Kd 0.941 0.941 0.925
+Ka 0.329 0.329 0.324
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl door_red
+Kd 0.502 0.157 0.133
+Ka 0.176 0.055 0.047
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl window_glass
+Kd 0.275 0.373 0.451
+Ka 0.096 0.130 0.158
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl garage_door
+Kd 0.894 0.886 0.863
+Ka 0.313 0.310 0.302
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl lawn
+Kd 0.376 0.541 0.227
+Ka 0.132 0.189 0.080
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl concrete
+Kd 0.745 0.737 0.714
+Ka 0.261 0.258 0.250
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl fence_wood
+Kd 0.588 0.439 0.306
+Ka 0.206 0.154 0.107
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl steel_paint
+Kd 0.553 0.643 0.725
+Ka 0.194 0.225 0.254
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl steel_paint_dark
+Kd 0.439 0.510 0.580
+Ka 0.154 0.178 0.203
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl galvanized
+Kd 0.604 0.663 0.698
+Ka 0.211 0.232 0.244
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl meter_ring
+Kd 0.686 0.706 0.725
+Ka 0.240 0.247 0.254
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl meter_glass
+Kd 0.784 0.831 0.910
+Ka 0.275 0.291 0.318
+Ks 0.35 0.35 0.35
+Ns 80
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl meter_face
+Kd 0.910 0.925 0.941
+Ka 0.318 0.324 0.329
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl meter_lcd
+Kd 0.471 0.541 0.431
+Ka 0.165 0.189 0.151
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl disconnect_gray
+Kd 0.588 0.627 0.667
+Ka 0.206 0.220 0.233
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl handle_black
+Kd 0.137 0.137 0.149
+Ka 0.048 0.048 0.052
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl placard_red
+Kd 0.784 0.137 0.118
+Ka 0.275 0.048 0.041
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl panel_paint
+Kd 0.608 0.682 0.753
+Ka 0.213 0.239 0.264
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl panel_seam
+Kd 0.322 0.349 0.376
+Ka 0.113 0.122 0.132
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl breaker_white
+Kd 0.902 0.929 0.969
+Ka 0.316 0.325 0.339
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl breaker_slot
+Kd 0.659 0.737 0.816
+Ka 0.231 0.258 0.285
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl inverter_white
+Kd 0.910 0.910 0.894
+Ka 0.318 0.318 0.313
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl placard_yellow
+Kd 0.941 0.784 0.157
+Ka 0.329 0.275 0.055
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl solar_cell
+Kd 0.094 0.141 0.243
+Ka 0.033 0.049 0.085
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl ac_grille
+Kd 0.204 0.204 0.212
+Ka 0.071 0.071 0.074
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl ac_cabinet
+Kd 0.808 0.784 0.722
+Ka 0.283 0.275 0.253
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl ac_fan
+Kd 0.118 0.118 0.125
+Ka 0.041 0.041 0.044
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl gas_meter_body
+Kd 0.690 0.698 0.690
+Ka 0.242 0.244 0.242
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl gas_pipe
+Kd 0.816 0.659 0.165
+Ka 0.285 0.231 0.058
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl hose_bib
+Kd 0.667 0.471 0.235
+Ka 0.233 0.165 0.082
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl mulch
+Kd 0.361 0.243 0.157
+Ka 0.126 0.085 0.055
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl leaf_5
+Kd 0.675 0.784 0.424
+Ka 0.236 0.275 0.148
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl leaf_4
+Kd 0.549 0.675 0.337
+Ka 0.192 0.236 0.118
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl leaf_3
+Kd 0.424 0.549 0.259
+Ka 0.148 0.192 0.091
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl leaf_2
+Kd 0.298 0.435 0.192
+Ka 0.104 0.152 0.067
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl leaf_1
+Kd 0.169 0.286 0.114
+Ka 0.059 0.100 0.040
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl leaf_0
+Kd 0.071 0.149 0.047
+Ka 0.025 0.052 0.016
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
+newmtl trunk
+Kd 0.290 0.220 0.157
+Ka 0.102 0.077 0.055
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+Tr 0.00
+
