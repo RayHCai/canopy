@@ -1,0 +1,175 @@
+newmtl slab
+Kd 0.680 0.670 0.640
+Ka 0.238 0.234 0.224
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl brick
+Kd 0.750 0.480 0.380
+Ka 0.262 0.168 0.133
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl gable_siding
+Kd 0.930 0.900 0.820
+Ka 0.326 0.315 0.287
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl trim_white
+Kd 0.960 0.960 0.940
+Ka 0.336 0.336 0.329
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl roof_shingle
+Kd 0.330 0.310 0.300
+Ka 0.115 0.108 0.105
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl gutter
+Kd 0.920 0.920 0.900
+Ka 0.322 0.322 0.315
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl barge_board
+Kd 0.960 0.960 0.940
+Ka 0.336 0.336 0.329
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl shingle_light
+Kd 0.440 0.420 0.410
+Ka 0.154 0.147 0.143
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl downspout
+Kd 0.860 0.860 0.840
+Ka 0.301 0.301 0.294
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl chimney
+Kd 0.600 0.400 0.330
+Ka 0.210 0.140 0.115
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl chimney_cap
+Kd 0.720 0.710 0.680
+Ka 0.252 0.248 0.238
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl window_glass
+Kd 0.560 0.740 0.860
+Ka 0.196 0.259 0.301
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl shutter
+Kd 0.180 0.320 0.300
+Ka 0.063 0.112 0.105
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl door_red
+Kd 0.620 0.160 0.140
+Ka 0.217 0.056 0.049
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl door_glass
+Kd 0.620 0.780 0.880
+Ka 0.217 0.273 0.308
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl door_knob
+Kd 0.850 0.720 0.350
+Ka 0.297 0.252 0.122
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl concrete
+Kd 0.760 0.750 0.720
+Ka 0.266 0.262 0.252
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl porch_roof
+Kd 0.330 0.310 0.300
+Ka 0.115 0.108 0.105
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl garage_door
+Kd 0.920 0.910 0.880
+Ka 0.322 0.319 0.308
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl garage_line
+Kd 0.780 0.770 0.740
+Ka 0.273 0.269 0.259
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl lamp
+Kd 0.200 0.200 0.220
+Ka 0.070 0.070 0.077
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl gable_vent
+Kd 0.300 0.300 0.320
+Ka 0.105 0.105 0.112
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0

@@ -255,3 +255,176 @@ def test_first_seen_records_the_earliest_evidence(cfg: Config) -> None:
     for obj in detector.extract().values():
         assert obj.first_seen_t == pytest.approx(10.0)
         assert obj.first_seen_by == 0
+
+
+# ---------------------------------------------------------------------------
+# DOOR, GARAGE_DOOR, WINDOW, GAS_METER, AC_UNIT and PANEL.
+#
+# A second wall (``y = 10``, clear of the first scene's evidence) so these
+# tests do not depend on where the meter/conduit/bush fixture puts things.
+# ---------------------------------------------------------------------------
+_WALL_Y = 10.0
+_DOOR_RGB = (110, 75, 45)
+_OFFWHITE_RGB = (232, 230, 224)  # the procedural garage panel's display colour -- see below
+_WINDOW_RGB = (120, 170, 210)
+_GAS_METER_RGB = (200, 120, 30)
+_SHED_RGB = (150, 125, 100)  # a look-alike hue to the door and the gas meter, at low saturation
+_AC_UNIT_RGB = (180, 185, 190)
+
+_ORIGINS_2 = np.array(
+    [
+        [0.0, 6.5, 1.5],
+        [-3.0, 7.0, 2.0],
+        [3.0, 7.0, 2.0],
+        [-2.0, 5.5, 3.0],
+        [2.0, 8.0, 1.0],
+        [0.0, 7.0, 4.5],
+    ]
+)
+
+
+def _wall2(rng: np.random.Generator, n: int = 4000, z_max: float = 5.5) -> Surface:
+    """Return a second wall plane, tall enough for an upper-storey window."""
+    return (
+        np.column_stack(
+            [rng.uniform(-6.0, 6.0, n), np.full(n, _WALL_Y), rng.uniform(0.3, z_max, n)]
+        ),
+        _WALL,
+    )
+
+
+def _observe2(detector: ObjectDetector, surfaces: list[Surface], seed: int) -> None:
+    """Like :func:`_observe`, but from positions facing the second wall."""
+    rng = np.random.default_rng(seed)
+    pts = np.concatenate([p for p, _ in surfaces])
+    base = np.concatenate(
+        [np.tile(np.asarray(rgb, dtype=np.float64), (len(p), 1)) for p, rgb in surfaces]
+    )
+    for i, origin in enumerate(_ORIGINS_2):
+        shade = rng.uniform(0.35, 1.0, (len(pts), 1))
+        rgb = np.clip(np.rint(base * shade + rng.normal(0.0, 3.0, base.shape)), 0, 255)
+        ray = pts - origin
+        dist = np.linalg.norm(ray, axis=1)
+        detector.integrate(
+            Observation(
+                drone_id=i % 3,
+                t=0.2 * i,
+                origin=origin,
+                dirs=ray / dist[:, None],
+                dist=dist,
+                rgb=rgb.astype(np.uint8),
+            )
+        )
+
+
+def test_door_and_garage_door_share_a_colour_and_are_told_apart_by_size(cfg: Config) -> None:
+    """A 1.0 m door and a 2.8 m garage door, painted the same, land in the right class each.
+
+    Authored and neighbour houses paint a garage door the same timber brown as
+    the front door (``config/default.yaml``'s ``GARAGE_DOOR`` comment), so
+    colour cannot separate them; only their span along the wall can.
+    """
+    rng = np.random.default_rng(20)
+    door = (_box(rng, (-1.0, _WALL_Y - 0.04, 0.0), (0.0, _WALL_Y, 2.1), 2000), _DOOR_RGB)
+    garage = (_box(rng, (2.0, _WALL_Y - 0.04, 0.0), (4.8, _WALL_Y, 2.2), 3000), _DOOR_RGB)
+    detector = ObjectDetector(cfg.perception, _LOT)
+    _observe2(detector, [_wall2(rng), door, garage], seed=21)
+    objects = detector.extract()
+    (found_door,) = _of(objects, Cls.DOOR)
+    (found_garage,) = _of(objects, Cls.GARAGE_DOOR)
+    # The door's box is taller than it is wide; the garage door's is the other
+    # way round, so the span is each box's *middle* extent, not its largest.
+    door_span = float(np.sort(found_door.box.size)[1])
+    garage_span = float(np.sort(found_garage.box.size)[-1])
+    assert door_span < 1.5
+    assert garage_span > 2.2
+
+
+def test_an_offwhite_garage_sized_panel_is_not_a_garage_door(cfg: Config) -> None:
+    """A garage-sized off-white panel is not a garage door, nor a door.
+
+    Garage doors sense as DOOR's brown (the procedural panel's off-white is
+    display-only, ADR 0014). Off-white sits between that brown and WALL's
+    beige in hue and saturation, so a GARAGE_DOOR band widened to reach it
+    would admit every wall; this pins the band away from it.
+    """
+    rng = np.random.default_rng(22)
+    offwhite = (
+        _box(rng, (2.0, _WALL_Y - 0.04, 0.0), (4.8, _WALL_Y, 2.2), 3000),
+        _OFFWHITE_RGB,
+    )
+    detector = ObjectDetector(cfg.perception, _LOT)
+    _observe2(detector, [_wall2(rng), offwhite], seed=23)
+    objects = detector.extract()
+    assert _of(objects, Cls.GARAGE_DOOR) == []
+    assert _of(objects, Cls.DOOR) == []
+
+
+def test_window_ground_and_upper_floor_are_both_found(cfg: Config) -> None:
+    """A sill-height window and one a storey above are both reported, not just the lower one.
+
+    ``WINDOW`` has no ``bottom_m``: the siting rule is what cares about height,
+    so perception must report every window regardless of storey.
+    """
+    rng = np.random.default_rng(24)
+    ground = (_box(rng, (-1.0, _WALL_Y - 0.04, 0.9), (0.0, _WALL_Y, 2.1), 1500), _WINDOW_RGB)
+    upper = (_box(rng, (-1.0, _WALL_Y - 0.04, 3.7), (0.0, _WALL_Y, 4.9), 1500), _WINDOW_RGB)
+    detector = ObjectDetector(cfg.perception, _LOT)
+    _observe2(detector, [_wall2(rng), ground, upper], seed=25)
+    windows = _of(detector.extract(), Cls.WINDOW)
+    assert len(windows) == 2
+    centres_z = sorted(float(w.box.center[2]) for w in windows)
+    np.testing.assert_allclose(centres_z, [1.5, 4.3], atol=0.1)
+
+
+def test_gas_meter_is_told_apart_from_meter_and_shed_beige(cfg: Config) -> None:
+    """A second, orange meter is its own class; a shed-beige box its own size is turned down.
+
+    The gas meter's hue (32 deg) sits between the door's and the shed's, so
+    only its higher saturation (0.85 against the shed's 0.33) keeps the
+    look-alike, sized and placed identically, out of every class.
+    """
+    rng = np.random.default_rng(26)
+    meter = (_box(rng, (-4.15, _WALL_Y - 0.33, 1.25), (-3.85, _WALL_Y, 1.96), 2000), _METER)
+    gas_meter = (
+        _box(rng, (-0.23, _WALL_Y - 0.285, 0.0), (0.23, _WALL_Y, 0.8), 2000),
+        _GAS_METER_RGB,
+    )
+    shed_lookalike = (
+        _box(rng, (3.77, _WALL_Y - 0.285, 0.0), (4.23, _WALL_Y, 0.8), 2000),
+        _SHED_RGB,
+    )
+    detector = ObjectDetector(cfg.perception, _LOT)
+    _observe2(detector, [_wall2(rng), meter, gas_meter, shed_lookalike], seed=27)
+    objects = detector.extract()
+    assert len(_of(objects, Cls.METER)) == 1
+    assert len(_of(objects, Cls.GAS_METER)) == 1
+    assert {o.cls for o in objects.values()} == {Cls.METER, Cls.GAS_METER}
+
+
+def test_ac_unit_panel_and_conduit_are_told_apart_by_geometry(cfg: Config) -> None:
+    """Three near-identical greys land in the right class by shape, not by colour alone.
+
+    AC_UNIT is a chunky box standing on the ground, set back from the wall;
+    PANEL is a thin wall box at chest height near a meter; CONDUIT is a thin,
+    tall pipe. All three sit close enough on the wall that only their shape
+    and ``near_cls`` rules -- not their nearly-identical saturation -- tell
+    them apart.
+    """
+    rng = np.random.default_rng(28)
+    meter = (_box(rng, (-3.15, _WALL_Y - 0.33, 1.25), (-2.85, _WALL_Y, 1.96), 1500), _METER)
+    panel = (_box(rng, (-2.45, _WALL_Y - 0.175, 0.72), (-1.95, _WALL_Y, 1.881), 2000), _PANEL)
+    ac_unit = (
+        _box(rng, (1.0, _WALL_Y - 1.5, 0.0), (2.0, _WALL_Y - 0.5, 0.9), 2500),
+        _AC_UNIT_RGB,
+    )
+    conduit = (_pipe(rng, (3.5, _WALL_Y - 0.03), (0.0, 1.5), 1000), _CONDUIT)
+    detector = ObjectDetector(cfg.perception, _LOT)
+    _observe2(detector, [_wall2(rng), meter, panel, ac_unit, conduit], seed=29)
+    objects = detector.extract()
+    (found_ac,) = _of(objects, Cls.AC_UNIT)
+    (found_panel,) = _of(objects, Cls.PANEL)
+    (found_conduit,) = _of(objects, Cls.CONDUIT)
+    np.testing.assert_allclose(found_ac.box.center[:2], (1.5, _WALL_Y - 1.0), atol=0.1)
+    np.testing.assert_allclose(found_panel.box.center[:2], (-2.2, _WALL_Y - 0.0875), atol=0.1)
+    np.testing.assert_allclose(found_conduit.box.center[:2], (3.5, _WALL_Y - 0.03), atol=0.1)

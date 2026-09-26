@@ -9,7 +9,7 @@ RUN := $(UV) run
 
 .DEFAULT_GOAL := help
 .PHONY: help setup lock lint format typecheck test test-cov test-all \
-        check fly view clean
+        check fly view props clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -48,6 +48,9 @@ fly: ## Single-drone flight check, kinematic
 
 view: ## Open the Canopy desktop viewer
 	$(RUN) canopy-view
+
+props: ## Rebuild the model library's props (assets/obj_export/assets) from scripts/build_props.py
+	$(RUN) python scripts/build_props.py --catalog
 
 clean: ## Remove caches and build artefacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov coverage.xml .coverage

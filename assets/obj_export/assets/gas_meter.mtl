@@ -1,56 +1,55 @@
-newmtl gas_meter_body
-Kd 0.690 0.698 0.690
-Ka 0.242 0.244 0.242
-Ks 0.06 0.06 0.06
-Ns 12
-illum 2
-d 1.0
-
 newmtl gas_meter_dark
-Kd 0.376 0.384 0.392
-Ka 0.132 0.135 0.137
+Kd 0.360 0.370 0.390
+Ka 0.126 0.130 0.136
 Ks 0.06 0.06 0.06
 Ns 12
 illum 2
 d 1.0
 
-newmtl galvanized
-Kd 0.604 0.663 0.698
-Ka 0.211 0.232 0.244
-Ks 0.35 0.35 0.35
-Ns 80
+newmtl gas_meter_body
+Kd 0.720 0.730 0.710
+Ka 0.252 0.256 0.248
+Ks 0.06 0.06 0.06
+Ns 12
 illum 2
 d 1.0
 
 newmtl meter_face
-Kd 0.910 0.925 0.941
-Ka 0.318 0.324 0.329
+Kd 0.950 0.960 0.970
+Ka 0.332 0.336 0.339
 Ks 0.06 0.06 0.06
 Ns 12
 illum 2
 d 1.0
 
 newmtl dial_dark
-Kd 0.157 0.157 0.173
-Ka 0.055 0.055 0.060
+Kd 0.150 0.150 0.170
+Ka 0.052 0.052 0.059
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl label_yellow
+Kd 0.950 0.760 0.120
+Ka 0.332 0.266 0.042
+Ks 0.06 0.06 0.06
+Ns 12
+illum 2
+d 1.0
+
+newmtl gas_iron
+Kd 0.470 0.490 0.510
+Ka 0.164 0.171 0.178
 Ks 0.06 0.06 0.06
 Ns 12
 illum 2
 d 1.0
 
 newmtl gas_pipe
-Kd 0.816 0.659 0.165
-Ka 0.285 0.231 0.058
-Ks 0.35 0.35 0.35
-Ns 80
+Kd 0.850 0.660 0.160
+Ka 0.297 0.231 0.056
+Ks 0.06 0.06 0.06
+Ns 12
 illum 2
 d 1.0
-
-newmtl gas_iron
-Kd 0.502 0.510 0.518
-Ka 0.176 0.178 0.181
-Ks 0.35 0.35 0.35
-Ns 80
-illum 2
-d 1.0
-

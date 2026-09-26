@@ -333,11 +333,18 @@ def test_frame_site_is_none_right_after_construction(cfg: Config, tmp_path: Path
     assert frame["site"] is None
 
 
-def test_battery_model_bounding_box_matches_rules_yaml() -> None:
-    """The battery mesh's box must match ``rules.yaml`` battery, in the site frame.
+def test_battery_model_bounding_box_contains_rules_yaml() -> None:
+    """The battery mesh's bounding box must contain ``rules.yaml`` battery, in the site frame.
 
     +X out of the wall (front), the back on the wall (x = 0), width centred on
-    ``y = 0`` -- see :func:`canopy.viz.viewer.battery_model`.
+    ``y = 0`` -- see :func:`canopy.viz.viewer.battery_model`. ``rules.yaml``
+    battery is the checklist's judged clearance box (real product dimensions);
+    the OBJ deliberately stays larger -- 0.93 x 0.58 x 1.0 m, including a
+    side-mounted disconnect the checklist box excludes -- and ADR 0013 records
+    that the two are not expected to match. Containment, not equality, is the
+    invariant that matters: the rendered battery must never look smaller than
+    the footprint a site was actually checked against, or a reviewer could be
+    shown less clearance than was really judged.
     """
     battery = load_site_rules().battery
     model = battery_model()
@@ -345,9 +352,9 @@ def test_battery_model_bounding_box_matches_rules_yaml() -> None:
     lo, hi = vertices.min(axis=0), vertices.max(axis=0)
     size = hi - lo
 
-    assert size[0] == pytest.approx(battery.depth_m, abs=0.02)
-    assert size[1] == pytest.approx(battery.width_m, abs=0.02)
-    assert size[2] == pytest.approx(battery.height_m, abs=0.02)
+    assert size[0] >= battery.depth_m - 0.02
+    assert size[1] >= battery.width_m - 0.02
+    assert size[2] >= battery.height_m - 0.02
     assert (lo[1] + hi[1]) / 2.0 == pytest.approx(0.0, abs=0.02)
     assert lo[0] == pytest.approx(0.0, abs=0.02)
     assert hi[0] > lo[0]
@@ -374,10 +381,16 @@ def test_a_completed_mission_yields_json_safe_battery_sites(cfg: Config, tmp_pat
     site_payload = frame["site"]
     sites = site_payload["sites"]
     assert 1 <= len(sites) <= 3
+    assert site_payload["verdict"] in ("pass", "manual_review", "reject")
+    assert isinstance(site_payload["justification"], str)
+    assert site_payload["justification"]
 
     viewer = cfg.viewer
-    passing_rgb = [c / 255.0 for c in viewer.site_rgb]
-    warning_rgb = [c / 255.0 for c in viewer.site_warning_rgb]
+    rgb_by_verdict = {
+        "pass": [c / 255.0 for c in viewer.site_rgb],
+        "manual_review": [c / 255.0 for c in viewer.site_warning_rgb],
+        "reject": [c / 255.0 for c in viewer.site_reject_rgb],
+    }
     for site in sites:
         assert isinstance(site["rank"], int)
         assert isinstance(site["pos"], list)
@@ -386,8 +399,8 @@ def test_a_completed_mission_yields_json_safe_battery_sites(cfg: Config, tmp_pat
         assert isinstance(site["meter"], list)
         assert len(site["meter"]) == 3
         assert isinstance(site["warnings"], list)
-        expected = warning_rgb if site["warnings"] else passing_rgb
-        assert site["color"] == pytest.approx(expected)
+        assert site["verdict"] in rgb_by_verdict
+        assert site["color"] == pytest.approx(rgb_by_verdict[site["verdict"]])
         for value in site["breakdown"].values():
             assert value is None or (isinstance(value, float) and np.isfinite(value))
 

@@ -361,6 +361,7 @@ input[type="range"]::-moz-range-thumb {
    anything) above a pill of prev / count / next. */
 .sites {
   --warn: #c7641c;
+  --reject: #dc4646;
   position: fixed;
   left: 50%;
   bottom: var(--inset);
@@ -378,6 +379,35 @@ input[type="range"]::-moz-range-thumb {
 .sites[hidden] { display: none; }
 .sites.open { opacity: 1; transform: translate(-50%, 0); }
 .sites > * { pointer-events: auto; }
+
+/* The overall call and its justification, above the per-site card. */
+.site-summary {
+  width: 100%;
+  padding: 8px 14px;
+  border: 1px solid var(--edge);
+  border-radius: 14px;
+  background: var(--glass);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px) saturate(1.4);
+  -webkit-backdrop-filter: blur(14px) saturate(1.4);
+}
+.site-summary-verdict {
+  display: inline-block;
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.site-summary-text {
+  margin: 3px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+/* Verdict colours, shared by the summary badge and each site's own label. */
+.verdict-pass { color: #d8c25a; }
+.verdict-manual_review { color: var(--warn); }
+.verdict-reject { color: var(--reject); }
 
 .site-card {
   --site: #ffe678;
@@ -408,6 +438,12 @@ input[type="range"]::-moz-range-thumb {
 }
 @keyframes site-pulse { 50% { opacity: 0.35; } }
 .site-title { font-weight: 600; }
+.site-verdict {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .site-meta {
   margin-left: auto;
   color: var(--ink-soft);
@@ -438,6 +474,10 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 700;
   vertical-align: 1px;
 }
+/* A REJECT site is also .flagged (warnings list is non-empty); .rejected on
+   top swaps the accent from orange to red. */
+.site-card.rejected .site-warnings { color: var(--reject); }
+.site-card.rejected .site-warnings li::before { background: var(--reject); }
 
 .site-nav {
   display: flex;

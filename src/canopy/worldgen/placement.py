@@ -37,6 +37,7 @@ from shapely.geometry import Polygon, box
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 
+from canopy.contracts import Cls
 from canopy.errors import WorldgenError
 
 if TYPE_CHECKING:
@@ -45,9 +46,11 @@ if TYPE_CHECKING:
     from canopy.worldgen.assets import AssetLibrary, AssetSpec, RoleSpec
 
 __all__ = [
+    "OPENING_CLASSES",
     "HouseFrame",
     "Mass",
     "Obstacle",
+    "Opening",
     "Placement",
     "PlacementContext",
     "PlacementRule",
@@ -88,9 +91,36 @@ _DEFAULT_WING_OVERLAP_M = 0.3
 _ALWAYS_PROCEDURAL = 0.0
 
 
+#: Semantic classes that are holes in a wall rather than wall.
+OPENING_CLASSES = frozenset({Cls.WINDOW, Cls.DOOR, Cls.GARAGE_DOOR})
+
+#: Kept clear either side of an opening by anything fixed to or set against a
+#: wall, when the role gives no ``opening_clearance_m`` of its own.
+_OPENING_CLEARANCE_M = 0.3
+
+
 # ---------------------------------------------------------------------------
 # Geometry a rule reasons about
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class Opening:
+    """A window or door the house model carries, as the stretch of wall it fills.
+
+    Only the authored shell has these at the time equipment is sited;
+    procedural massing gets its openings last, fitted around the equipment,
+    so its walls carry none.
+    """
+
+    lo_m: float
+    """Start, in metres along the wall from :attr:`WallSegment.a`."""
+    hi_m: float
+    """End, in metres along the wall from :attr:`WallSegment.a`."""
+    bottom_m: float
+    """Height of the opening's lowest point above the ground."""
+    cls: Cls
+    """``WINDOW``, ``DOOR`` or ``GARAGE_DOOR``."""
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class WallSegment:
     """One exterior wall of the house, as a ground-level line segment."""
@@ -101,6 +131,8 @@ class WallSegment:
     """End point ``(x, y)``."""
     normal: npt.NDArray[np.float64]
     """Outward unit normal ``(x, y)``, pointing away from the house."""
+    openings: tuple[Opening, ...] = ()
+    """Windows and doors already in this wall, which nothing may be mounted over."""
 
     @property
     def length(self) -> float:
@@ -110,6 +142,11 @@ class WallSegment:
     def at(self, t: float) -> npt.NDArray[np.float64]:
         """Point a fraction ``t`` of the way from :attr:`a` to :attr:`b`."""
         return self.a + (self.b - self.a) * t
+
+    def along(self, xy: npt.NDArray[np.float64]) -> float:
+        """Distance of ``xy``'s projection along the wall from :attr:`a`, in metres."""
+        unit = (self.b - self.a) / max(self.length, _EPS_M)
+        return float(np.dot(xy[:2] - self.a, unit))
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -563,6 +600,36 @@ def _seen(ctx: PlacementContext, placements: Sequence[Placement]) -> tuple[Obsta
     return (*ctx.obstacles, *(p.obstacle() for p in placements))
 
 
+def _clear_of_openings(
+    wall: WallSegment,
+    group: Sequence[Placement],
+    gap_m: float,
+    *,
+    below_m: float = math.inf,
+) -> bool:
+    """Whether a group of placements against ``wall`` covers none of its openings.
+
+    The group is taken as one stretch of wall, from the near edge of its first
+    piece to the far edge of its last, so a conduit bridging a meter and a
+    panel cannot straddle a window between them. Each piece is as wide as its
+    clearance disc, as in :func:`_blocked_spans`. That stretch must miss every
+    opening by ``gap_m``, whatever the heights involved: a meter has conduit
+    running down to grade, so a window below it or above it is equally in the
+    way.
+
+    ``below_m`` relaxes that for a unit standing on the ground: only openings
+    whose bottom is lower than it count, so an AC condenser may sit under a
+    window but never in front of a door.
+    """
+    if not wall.openings or not group:
+        return True
+    alongs = [wall.along(p.pos) for p in group]
+    lo = min(a - p.radius_m for a, p in zip(alongs, group, strict=True))
+    hi = max(a + p.radius_m for a, p in zip(alongs, group, strict=True))
+    blocked = [(o.lo_m - gap_m, o.hi_m + gap_m) for o in wall.openings if o.bottom_m < below_m]
+    return _is_free(lo, hi, blocked)
+
+
 # ---------------------------------------------------------------------------
 # Rules
 # ---------------------------------------------------------------------------
@@ -760,34 +827,46 @@ def _wall_mount(ctx: PlacementContext) -> list[Placement]:
     Models for this rule are authored with their origin on the wall face, so the
     placement point is the wall contact point and only ``standoff_m`` separates
     them -- there is no half-depth to add.
+
+    A unit goes only on bare wall, ``opening_clearance_m`` clear of any window
+    or door the house model carries. One that finds no such spot is left out:
+    the gas meter is a distractor, not the mission.
     """
     bottom = float(ctx.param("bottom_height_m", default=0.0))
     clearance = float(ctx.param("corner_clearance_m"))
     standoff = float(ctx.param("standoff_m"))
+    gap = float(ctx.param("opening_clearance_m", default=_OPENING_CLEARANCE_M))
     walls = _walls_for(ctx, avoid_meter_wall=bool(ctx.param("avoid_meter_wall", default=False)))
 
     placements: list[Placement] = []
     for _ in range(ctx.n):
-        wall, t = _choose_wall(ctx, clearance, walls)
-        spec = ctx.pick()
-        xy = wall.at(t) + wall.normal * standoff
-        placements.append(
-            Placement(
+        for _attempt in range(_MAX_ATTEMPTS):
+            wall, t = _choose_wall(ctx, clearance, walls)
+            spec = ctx.pick()
+            xy = wall.at(t) + wall.normal * standoff
+            candidate = Placement(
                 spec=spec,
                 pos=_as3(xy, bottom),
                 size=ctx.extents(spec),
                 yaw=_yaw_onto(spec.facing_xy(), wall.normal),
                 wall_normal=_as3(wall.normal),
             )
-        )
+            if _clear_of_openings(wall, [candidate], gap):
+                placements.append(candidate)
+                break
     return placements
 
 
 @register_rule("wall_adjacent")
 def _wall_adjacent(ctx: PlacementContext) -> list[Placement]:
-    """Stand a unit on the ground, set back from an exterior wall -- the AC condenser."""
+    """Stand a unit on the ground, set back from an exterior wall -- the AC condenser.
+
+    The unit may stand under a window it does not reach up to, as real
+    condensers do, but never in front of a door or a garage door.
+    """
     standoff = float(ctx.param("standoff_m"))
     clearance = float(ctx.param("corner_clearance_m"))
+    gap = float(ctx.param("opening_clearance_m", default=_OPENING_CLEARANCE_M))
 
     placements: list[Placement] = []
     for _ in range(ctx.n):
@@ -803,7 +882,9 @@ def _wall_adjacent(ctx: PlacementContext) -> list[Placement]:
                 yaw=_yaw_onto(spec.facing_xy(), wall.normal),
                 wall_normal=_as3(wall.normal),
             )
-            if _clear(xy, candidate.radius_m, _seen(ctx, placements)):
+            if _clear(xy, candidate.radius_m, _seen(ctx, placements)) and _clear_of_openings(
+                wall, [candidate], gap, below_m=float(size[2]) + gap
+            ):
                 placements.append(candidate)
                 break
     return placements
@@ -1348,12 +1429,44 @@ def _service_assembly(ctx: PlacementContext) -> list[Placement]:
     metric and the site solver see a meter, a panel and conduit rather than one
     undifferentiated lump -- and because the conduit route is what the SSR
     packet is ultimately about.
+
+    The whole group goes on bare wall, ``opening_clearance_m`` clear of any
+    window or door the house model carries, so the assembly is redrawn until
+    it fits between them. Procedural massing has no openings yet at this
+    point, so there the first draw always stands.
+
+    Raises
+    ------
+    WorldgenError
+        If no draw finds a stretch of bare wall long enough. Every property
+        needs its meter, so this is not a count to thin out.
     """
     clearance = float(ctx.param("corner_clearance_m"))
+    gap = float(ctx.param("opening_clearance_m", default=_OPENING_CLEARANCE_M))
+
+    for _attempt in range(_MAX_ATTEMPTS):
+        wall, t = _choose_wall(ctx, clearance)
+        placements = _service_on(ctx, wall, t, clearance)
+        if _clear_of_openings(wall, placements, gap):
+            return placements
+
+    house = ctx.require_house()
+    msg = (
+        f"role {ctx.role.name!r}: found no bare wall for the service assembly in "
+        f"{_MAX_ATTEMPTS} draws; the house's {len(house.walls)} walls carry "
+        f"{sum(len(w.openings) for w in house.walls)} openings, and each draw needs "
+        f"{gap} m clear of them and {clearance} m clear of the corners"
+    )
+    raise WorldgenError(msg)
+
+
+def _service_on(
+    ctx: PlacementContext, wall: WallSegment, t: float, clearance_m: float
+) -> list[Placement]:
+    """Draw one service assembly with its meter a fraction ``t`` along ``wall``."""
     standoff = float(ctx.param("standoff_m"))
     meter_bottom = float(ctx.param("meter_bottom_m"))
 
-    wall, t = _choose_wall(ctx, clearance)
     along = wall.b - wall.a
     unit = along / max(float(np.linalg.norm(along)), _EPS_M)
     anchor = wall.at(t)
@@ -1375,7 +1488,7 @@ def _service_assembly(ctx: PlacementContext) -> list[Placement]:
     forward = float(np.linalg.norm(wall.b - anchor))
     backward = float(np.linalg.norm(anchor - wall.a))
     direction = unit if forward >= backward else -unit
-    room = max(forward, backward) - clearance
+    room = max(forward, backward) - clearance_m
 
     panel_lo, panel_hi = (float(v) for v in ctx.param("panel_offset_m"))
     offset = float(ctx.rng.uniform(panel_lo, panel_hi))

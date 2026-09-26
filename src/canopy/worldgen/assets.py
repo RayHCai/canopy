@@ -43,9 +43,9 @@ import numpy.typing as npt
 import trimesh
 import yaml
 
-from canopy.contracts import CLASS_COLORS, Cls, Rgb, Vec3
+from canopy.contracts import CLASS_COLORS, Cls, MaterialRun, Rgb, Vec3
 from canopy.errors import AssetError
-from canopy.worldgen.objio import MaterialGroup, ObjObject, read_obj
+from canopy.worldgen.objio import MaterialGroup, MtlMaterial, ObjObject, read_mtl, read_obj
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -79,6 +79,8 @@ _RADIAL_SECTIONS = 16
 _SUPPORTED_INDEX_VERSION = 1
 _XYZ = 3
 _PAIR = 2
+#: Upper bound of one 8-bit display colour channel.
+_RGB_MAX = 255
 #: Extents below this are treated as degenerate and left unscaled, which keeps
 #: the flat ground plane (zero z extent) from dividing by zero.
 _MIN_EXTENT_M = 1e-9
@@ -310,6 +312,11 @@ class BuiltMesh:
     color: Rgb
     vertices: npt.NDArray[np.float64]
     faces: npt.NDArray[np.int32]
+    runs: tuple[MaterialRun, ...] = ()
+    """Display colours of ``faces``, as runs in face order; see
+    :attr:`~canopy.contracts.SceneObject.materials`. Run ``k`` covers the next
+    ``runs[k].n_faces`` faces after the ones before it, and the counts sum to
+    ``len(faces)``."""
 
 
 # ---------------------------------------------------------------------------
@@ -326,8 +333,24 @@ class AssetLibrary:
     """In document order, which is also placement order."""
     materials: dict[str, Cls] = field(default_factory=dict)
     """Material name to semantic class. Unlisted materials use the model's ``cls``."""
+    palette: dict[str, Rgb] = field(default_factory=dict)
+    """Material name to display colour (sRGB 0..255), for the viewer only.
+
+    A ``parts:`` model has no authored MTL to draw its per-material colour
+    from, so this is how one of its materials -- ``roof_shingle``, say -- gets
+    a display colour of its own instead of the flat class colour every other
+    material of that class would share. Unlisted materials fall through to
+    :meth:`display_rgb`'s other sources; sensing never reads this.
+    """
 
     _cache: dict[str, ObjObject] = field(default_factory=dict, repr=False)
+    _mtl_cache: dict[str, dict[str, MtlMaterial]] = field(default_factory=dict, repr=False)
+    """Parsed MTL files, keyed by the ``mesh`` path that named them.
+
+    A missing MTL is recorded as ``{}`` rather than left unread, so a model
+    with no authored materials (most ``parts:`` models, and some ``mesh:``
+    ones) is not re-stat'd on every :meth:`display_rgb` call.
+    """
 
     # -- selection ----------------------------------------------------------
     def candidates(self, tag: str) -> list[AssetSpec]:
@@ -363,6 +386,39 @@ class AssetLibrary:
         if (own := spec.materials.get(material)) is not None:
             return own
         return self.materials.get(material, spec.cls)
+
+    def display_rgb(self, spec: AssetSpec, material: str) -> Rgb:
+        """Return the colour the viewer should paint one material run in.
+
+        Most specific wins, same principle as :meth:`cls_for`, but over a
+        different ladder: the authored MTL's own ``Kd`` beside a ``mesh:``
+        model (only that kind can have one), then the library-wide ``palette``
+        for a ``parts:`` prop with no art of its own, then the class's one flat
+        sensed colour -- which is also what :attr:`~canopy.contracts.SceneObject.materials`
+        falls back to when it is empty, so an unmapped material is never
+        actually wrong, just less specific.
+        """
+        if spec.mesh is not None:
+            mtl = self._mtl_for(spec.mesh)
+            if (found := mtl.get(material)) is not None:
+                return _rgb_from_kd(found.diffuse)
+        if (rgb := self.palette.get(material)) is not None:
+            return rgb
+        return spec.rgb_for(self.cls_for(spec, material))
+
+    def _mtl_for(self, mesh: str) -> dict[str, MtlMaterial]:
+        """Return the MTL beside ``mesh``, cached by mesh name; ``{}`` if none exists.
+
+        A missing MTL is not an error -- ``parts:`` models and some authored
+        ones have none -- so a miss is cached too, or every uncoloured
+        material would re-``stat`` the same absent file on every run.
+        """
+        if (cached := self._mtl_cache.get(mesh)) is not None:
+            return cached
+        path = (self.root / mesh).with_suffix(".mtl")
+        found = read_mtl(path) if path.is_file() else {}
+        self._mtl_cache[mesh] = found
+        return found
 
     # -- geometry -----------------------------------------------------------
     def canonical(self, spec: AssetSpec) -> ObjObject:
@@ -503,7 +559,11 @@ class AssetLibrary:
         -------
         list[BuiltMesh]
             One entry per semantic class present in the model, in the order the
-            materials first appear.
+            materials first appear. Each carries :attr:`BuiltMesh.runs`, the
+            same class's faces further split by authored material, purely for
+            the viewer -- :attr:`BuiltMesh.color` is still the one flat colour
+            every one of the class's faces reports to the ranger, unchanged by
+            any of this.
         """
         obj = self.canonical(spec)
         verts = obj.vertices * _scale_factor(obj.extents, np.asarray(extents, dtype=np.float64))
@@ -517,17 +577,43 @@ class AssetLibrary:
         if max_edge is None and spec.mesh is None:
             max_edge = default_max_edge_m
 
-        by_cls: dict[Cls, list[npt.NDArray[np.int32]]] = {}
+        by_cls: dict[Cls, list[MaterialGroup]] = {}
         for group in obj.groups:
-            by_cls.setdefault(self.cls_for(spec, group.material), []).append(group.faces)
+            by_cls.setdefault(self.cls_for(spec, group.material), []).append(group)
 
         built = []
-        for cls, face_lists in by_cls.items():
-            faces = np.concatenate(face_lists) if len(face_lists) > 1 else face_lists[0]
+        for cls, groups in by_cls.items():
+            faces = (
+                np.concatenate([g.faces for g in groups]) if len(groups) > 1 else groups[0].faces
+            )
+            # Which of `groups` each face of `faces` came from, in the same
+            # first-appearance order: the groups are already concatenated in
+            # that order, so this starts out sorted ascending.
+            face_material = np.repeat(np.arange(len(groups)), [len(g.faces) for g in groups])
             sub_v, sub_f = _compact(verts, faces)
             if max_edge is not None and max_edge > 0.0:
-                sub_v, sub_f = _subdivide(sub_v, sub_f, max_edge)
-            built.append(BuiltMesh(cls=cls, color=spec.rgb_for(cls), vertices=sub_v, faces=sub_f))
+                sub_v, sub_f, source_face = _subdivide(sub_v, sub_f, max_edge)
+                face_material = face_material[source_face]
+                # Subdivision does not preserve the material's contiguous run,
+                # since a split face's children are interleaved with its
+                # neighbours'; sort them back into runs. Stable, so faces that
+                # share a material keep their relative order (cosmetic, but
+                # deterministic output is the point of this whole module).
+                order = np.argsort(face_material, kind="stable")
+                sub_f = sub_f[order]
+                face_material = face_material[order]
+            counts = np.bincount(face_material, minlength=len(groups))
+            runs = tuple(
+                MaterialRun(
+                    material=group.material,
+                    rgb=self.display_rgb(spec, group.material),
+                    n_faces=int(n),
+                )
+                for group, n in zip(groups, counts, strict=True)
+            )
+            built.append(
+                BuiltMesh(cls=cls, color=spec.rgb_for(cls), vertices=sub_v, faces=sub_f, runs=runs)
+            )
         return built
 
 
@@ -562,14 +648,40 @@ def _compact(
 
 def _subdivide(
     verts: npt.NDArray[np.float64], faces: npt.NDArray[np.int32], max_edge_m: float
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int32]]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int32], npt.NDArray[np.int64]]:
     """Split triangles until no edge is longer than ``max_edge_m``.
 
     Fine triangles are what make the grayscale-to-colour reveal read as a wipe
     across a wall rather than whole objects popping into colour.
+
+    Returns
+    -------
+    tuple
+        ``(vertices, faces, source_face)``: ``source_face[i]`` is the index,
+        into the *input* ``faces``, of the original triangle output face ``i``
+        was split from. :meth:`AssetLibrary.build` uses it to carry a face's
+        material through subdivision, since a split face is otherwise
+        indistinguishable from any other.
     """
-    out_v, out_f = trimesh.remesh.subdivide_to_size(verts, faces, max_edge=max_edge_m)
-    return np.asarray(out_v, dtype=np.float64), np.asarray(out_f, dtype=np.int32)
+    out_v, out_f, source = trimesh.remesh.subdivide_to_size(
+        verts, faces, max_edge=max_edge_m, return_index=True
+    )
+    return (
+        np.asarray(out_v, dtype=np.float64),
+        np.asarray(out_f, dtype=np.int32),
+        np.asarray(source, dtype=np.int64),
+    )
+
+
+def _rgb_from_kd(diffuse: tuple[float, float, float]) -> Rgb:
+    """Convert an authored ``Kd`` (0..1 float, as authored) to display sRGB 0..255.
+
+    Clipped rather than trusted: art occasionally authors a ``Kd`` a hair
+    outside ``[0, 1]`` (a bloom-adjacent highlight colour, say), and an 8-bit
+    channel outside ``[0, 255]`` is meaningless to three.js.
+    """
+    r, g, b = (max(0, min(255, round(c * 255))) for c in diffuse)
+    return (r, g, b)
 
 
 def _merge(objects: Iterable[ObjObject], name: str) -> ObjObject:
@@ -783,6 +895,16 @@ def _int_pair(value: Any, where: str) -> tuple[int, int]:
     return (int(lo), int(hi))
 
 
+def _rgb_value(value: Any, where: str) -> Rgb:
+    """Coerce a display colour: 3 integers in ``[0, 255]``."""
+    triple = _triple(value, where)
+    ints = tuple(int(c) for c in triple)
+    if any(c < 0 or c > _RGB_MAX for c in ints):
+        msg = f"{where}: expected 3 integers in [0, {_RGB_MAX}], got {value!r}"
+        raise AssetError(msg)
+    return (ints[0], ints[1], ints[2])
+
+
 def _cls(name: Any, where: str) -> Cls:
     """Coerce a :class:`~canopy.contracts.Cls` member name."""
     if not isinstance(name, str) or name not in Cls.__members__:
@@ -979,7 +1101,7 @@ def load_library(path: Path | str | None = None) -> AssetLibrary:
         raise AssetError(msg) from exc
 
     doc = _mapping(yaml.safe_load(text), str(resolved))
-    _reject_unknown(doc, ("version", "roles", "models", "materials"), str(resolved))
+    _reject_unknown(doc, ("version", "roles", "models", "materials", "palette"), str(resolved))
 
     version = doc.get("version")
     if version != _SUPPORTED_INDEX_VERSION:
@@ -1005,9 +1127,17 @@ def load_library(path: Path | str | None = None) -> AssetLibrary:
         name: _cls(value, f"materials.{name}")
         for name, value in _mapping(doc.get("materials", {}), "materials").items()
     }
+    palette = {
+        name: _rgb_value(value, f"palette.{name}")
+        for name, value in _mapping(doc.get("palette", {}), "palette").items()
+    }
 
     library = AssetLibrary(
-        root=resolved.parent.parent, models=models, roles=roles, materials=materials
+        root=resolved.parent.parent,
+        models=models,
+        roles=roles,
+        materials=materials,
+        palette=palette,
     )
     for role in roles:
         library.candidates(role.tag)  # fail now, not mid-generation

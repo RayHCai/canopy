@@ -623,12 +623,13 @@ function makeLotBoundary(lot) {
 }
 
 // ---------------------------------------------------------------------------
-// The generated property: grayscale until mapped, true colour triangle by
-// triangle as the swarm reveals it. Background objects (the neighbours) are
-// always drawn in true colour -- they were never the swarm's job to survey.
+// The generated property: grayscale until mapped, triangle by triangle turning
+// into its authored material's own colour (not one flat class colour) as the
+// swarm reveals it. Background objects (the neighbours) are always drawn in
+// true colour -- they were never the swarm's job to survey.
 // ---------------------------------------------------------------------------
 const GRAY_LUMINANCE_SCALE = 0.6;
-const property = { seed: null, objects: [] }; // { mesh, geometry, colorAttr, offset, count, background, trueColor }
+const property = { seed: null, objects: [] }; // { mesh, colorAttr, offset, count, background, trueFace, grayFace }
 
 function decodeF32(b64) {
   const bin = atob(b64);
@@ -642,6 +643,13 @@ function decodeU32(b64) {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return new Uint32Array(bytes.buffer);
+}
+
+function decodeU8(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
 }
 
 function decodeI32(b64) {
@@ -665,6 +673,25 @@ function disposeProperty() {
     worldGroup.remove(obj.mesh);
   }
   property.objects = [];
+}
+
+// Converted (linear-space) true/gray THREE.Color pairs, keyed by packed 24-bit
+// sRGB (0..255) so a wall of a quarter-million faces sharing a handful of
+// authored materials allocates a handful of Colors, not one per face.
+const faceColorCache = new Map();
+function faceColorsFor(r, g, b) {
+  const key = (r << 16) | (g << 8) | b;
+  let entry = faceColorCache.get(key);
+  if (!entry) {
+    const rgb01 = [r / 255, g / 255, b / 255];
+    const gray = grayOf(rgb01);
+    entry = {
+      trueColor: new THREE.Color().setRGB(...rgb01, THREE.SRGBColorSpace),
+      grayColor: new THREE.Color().setRGB(gray, gray, gray, THREE.SRGBColorSpace),
+    };
+    faceColorCache.set(key, entry);
+  }
+  return entry;
 }
 
 function buildProperty(desc) {
@@ -691,14 +718,34 @@ function buildProperty(desc) {
     indexed.dispose();
     geometry.computeVertexNormals();
 
-    const trueColor = new THREE.Color().setRGB(...obj.color, THREE.SRGBColorSpace);
-    const gray = grayOf(obj.color);
-    const startColor = obj.background
-      ? trueColor
-      : new THREE.Color().setRGB(gray, gray, gray, THREE.SRGBColorSpace);
     const count = geometry.getAttribute('position').count;
+    const faceCount = count / 3;
+    // Per-face true/gray colour, in linear space, ready to fan out to each
+    // face's 3 vertices below. `obj.colors` (per-face authored material RGB)
+    // is present whenever the mesh carries material runs; otherwise every
+    // face shares the object's one flat class colour, as before.
+    const trueFace = new Float32Array(faceCount * 3);
+    const grayFace = new Float32Array(faceCount * 3);
+    if (obj.colors) {
+      const rgb = decodeU8(obj.colors);
+      for (let f = 0; f < faceCount; f++) {
+        const { trueColor, grayColor } = faceColorsFor(rgb[f * 3], rgb[f * 3 + 1], rgb[f * 3 + 2]);
+        trueColor.toArray(trueFace, f * 3);
+        grayColor.toArray(grayFace, f * 3);
+      }
+    } else {
+      const { trueColor, grayColor } = faceColorsFor(...obj.color.map((c) => Math.round(c * 255)));
+      for (let f = 0; f < faceCount; f++) {
+        trueColor.toArray(trueFace, f * 3);
+        grayColor.toArray(grayFace, f * 3);
+      }
+    }
+
+    const startFace = obj.background ? trueFace : grayFace;
     const colors = new Float32Array(count * 3);
-    for (let i = 0; i < count; i++) startColor.toArray(colors, i * 3);
+    for (let f = 0; f < faceCount; f++) {
+      for (let v = 0; v < 3; v++) colors.set(startFace.subarray(f * 3, f * 3 + 3), f * 9 + v * 3);
+    }
     const colorAttr = new THREE.BufferAttribute(colors, 3);
     colorAttr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute('color', colorAttr);
@@ -710,8 +757,8 @@ function buildProperty(desc) {
     mesh.receiveShadow = true;
     worldGroup.add(mesh);
     property.objects.push({
-      mesh, colorAttr, offset: obj.tri_offset, count: count / 3,
-      background: obj.background, trueColor, grayColor: startColor.clone(),
+      mesh, colorAttr, offset: obj.tri_offset, count: faceCount,
+      background: obj.background, trueFace, grayFace,
     });
   }
 }
@@ -722,13 +769,18 @@ function repaintGray() {
   for (const obj of property.objects) {
     if (obj.background) continue;
     const arr = obj.colorAttr.array;
-    for (let i = 0; i < arr.length; i += 3) obj.grayColor.toArray(arr, i);
+    for (let f = 0; f < obj.count; f++) {
+      const face = obj.grayFace.subarray(f * 3, f * 3 + 3);
+      for (let v = 0; v < 3; v++) arr.set(face, f * 9 + v * 3);
+    }
     obj.colorAttr.needsUpdate = true;
   }
 }
 
 /** Find the object owning global triangle id ``triId`` by its ascending
- *  ``tri_offset``, then paint that triangle's 3 vertices its true colour. */
+ *  ``tri_offset``, then paint that triangle's 3 vertices from grey into its
+ *  own face's authored material colour (or the object's flat class colour,
+ *  for a mesh with no material runs). */
 function revealTriangles(ids) {
   if (!ids.length) return;
   const offsets = property.objects.map((o) => o.offset);
@@ -746,8 +798,9 @@ function revealTriangles(ids) {
     if (local < 0 || local >= obj.count) continue; // background or out of range
     const base = local * 9;
     const arr = obj.colorAttr.array;
+    const face = obj.trueFace.subarray(local * 3, local * 3 + 3);
     for (let v = 0; v < 3; v++) {
-      obj.trueColor.toArray(arr, base + v * 3);
+      arr.set(face, base + v * 3);
     }
     touched.add(obj);
   }
@@ -1014,6 +1067,7 @@ function buildSites(site, now) {
     return;
   }
   sites.battery = site.battery;
+  carousel.summary(site.verdict, site.justification);
   site.sites.forEach((s, i) => {
     const root = new THREE.Group();
     toThree(s.pos, root.position);
@@ -1266,6 +1320,9 @@ const toast = {
 /** The battery-site carousel at the bottom centre. It never advances on its
  *  own: the arrows (or the arrow keys while one has focus) step through the
  *  sites, and the camera glides to each. */
+/** Human labels for a SiteVerdict (canopy.contracts), keyed by its wire value. */
+const VERDICT_LABEL = { pass: 'Pass', manual_review: 'Manual review', reject: 'Reject' };
+
 const carousel = {
   el: document.getElementById('sites'),
   prev: document.getElementById('site-prev'),
@@ -1273,9 +1330,19 @@ const carousel = {
   count: document.getElementById('site-count'),
   card: document.getElementById('site-card'),
   title: document.getElementById('site-title'),
+  verdict: document.getElementById('site-verdict'),
   meta: document.getElementById('site-meta'),
   warnings: document.getElementById('site-warnings'),
+  summaryVerdict: document.getElementById('site-summary-verdict'),
+  summaryText: document.getElementById('site-summary-text'),
   sites: [],
+
+  /** The overall call and its justification, shown above the per-site card. */
+  summary(verdict, justification) {
+    this.summaryVerdict.textContent = VERDICT_LABEL[verdict] ?? verdict;
+    this.summaryVerdict.className = `site-summary-verdict verdict-${verdict}`;
+    this.summaryText.textContent = justification;
+  },
 
   init() {
     this.prev.addEventListener('click', () => showSite(sites.index - 1));
@@ -1300,18 +1367,23 @@ const carousel = {
     this.sites = [];
     this.el.classList.remove('open');
     this.el.hidden = true;
+    this.summaryVerdict.textContent = '';
+    this.summaryText.textContent = '';
   },
 
   render(index) {
     const s = this.sites[index];
-    const flagged = s.warnings.length > 0;
+    const flagged = s.verdict !== 'pass';
     this.count.textContent = `${index + 1} / ${this.sites.length}`;
     this.title.textContent = `Battery site ${s.rank}`;
-    const toMeter = s.breakdown.meter_distance;
+    this.verdict.textContent = VERDICT_LABEL[s.verdict] ?? s.verdict;
+    this.verdict.className = `site-verdict verdict-${s.verdict}`;
+    const toMeter = s.breakdown.harness_run;
     this.meta.textContent = typeof toMeter === 'number'
-      ? `${toMeter.toFixed(2)} m (${(toMeter / 0.3048).toFixed(1)} ft) from the meter`
+      ? `${toMeter.toFixed(2)} m (${(toMeter / 0.3048).toFixed(1)} ft) harness run`
       : '';
     this.card.classList.toggle('flagged', flagged);
+    this.card.classList.toggle('rejected', s.verdict === 'reject');
     this.card.style.setProperty('--site', `rgb(${s.color.map((c) => Math.round(c * 255)).join(' ')})`);
     this.warnings.replaceChildren(
       ...(flagged ? s.warnings : ['Meets every placement rule']).map((text) => {

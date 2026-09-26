@@ -22,3 +22,4 @@ instead.
 | [0011](0011-colour-and-geometry-object-detection.md) | Object detection from range and colour, not object ids |
 | [0012](0012-battery-siting-rules-and-wall-candidates.md) | Battery siting: registered rules over candidates along walls traced from occupancy — placeholder values superseded by [0013](0013-battery-space-checklist-and-three-way-verdict.md) |
 | [0013](0013-battery-space-checklist-and-three-way-verdict.md) | Battery siting encodes the Battery Space checklist, with a pass / manual review / reject verdict |
+| [0014](0014-low-poly-props-and-material-colours.md) | Props are authored in code as low-poly art; the viewer paints material colours while sensing stays per class |

@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from canopy.config import load_config
-from canopy.contracts import Cls, Points, SceneManifest, SceneObject, Vec3
+from canopy.contracts import Cls, MaterialRun, Points, SceneManifest, SceneObject, Vec3
 from canopy.errors import AssetError, WorldgenError
 from canopy.log import get_logger
 from canopy.worldgen import placement as rules
@@ -65,6 +65,16 @@ _OBJ_PRECISION = 6
 #: seed: the neighbourhood is a fixed backdrop, and varying it per seed would
 #: only add frame-to-frame noise to comparisons between properties.
 _BACKGROUND_SEED = 0
+
+#: How far a window or door triangle may sit from its wall line and still be
+#: in that wall. Glazing is recessed a few centimetres and a door surround
+#: stands proud by as much again; half a metre takes both with room to spare
+#: while still falling short of the opposite wall of any room.
+_OPENING_REACH_M = 0.5
+
+#: Two stretches of opening closer than this along a wall are one opening: the
+#: pieces of one window frame touch, or overlap, rather than leave a gap.
+_OPENING_MERGE_M = 0.01
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +282,94 @@ def _wall_frame(placed: Sequence[Placement], library: AssetLibrary) -> HouseFram
         for item in placed
         for group in library.canonical(item.spec).groups
     )
-    return dataclasses.replace(rules.house_frame(masses), has_openings=glazed)
+    frame = rules.house_frame(masses)
+    return dataclasses.replace(
+        frame, walls=_wall_openings(frame.walls, placed, library), has_openings=glazed
+    )
+
+
+def _wall_openings(
+    walls: Sequence[rules.WallSegment], placed: Sequence[Placement], library: AssetLibrary
+) -> tuple[rules.WallSegment, ...]:
+    """Record the house models' own windows and doors on the walls they are in.
+
+    The authored shell's openings are materials in its mesh, not placements, so
+    without this every wall looks bare to the rules that mount equipment on it
+    and a meter can land on a window. Each triangle of an opening class goes to
+    the wall nearest its centroid, and its extent along that wall is merged with
+    its neighbours' into one :class:`~canopy.worldgen.placement.Opening` per
+    window or door. Windows stacked on two storeys merge into one, which is
+    what the rules want: equipment avoids the whole column.
+
+    Built from the same :meth:`AssetLibrary.build` the baker uses, so the
+    openings are exactly where the exported mesh puts them.
+    """
+    if not walls:
+        return tuple(walls)
+    starts = np.array([w.a for w in walls], dtype=np.float64)
+    edges = np.array([w.b - w.a for w in walls], dtype=np.float64)
+    lengths = np.linalg.norm(edges, axis=1)
+    units = edges / lengths[:, None]
+
+    found: list[list[rules.Opening]] = [[] for _ in walls]
+    for item in placed:
+        groups = library.canonical(item.spec).groups
+        if not any(library.cls_for(item.spec, g.material) in rules.OPENING_CLASSES for g in groups):
+            continue  # a procedural block or a roof: nothing to build
+        meshes = library.build(
+            item.spec, pos=item.pos, extents=item.size, yaw=item.yaw, default_max_edge_m=0.0
+        )
+        for mesh in meshes:
+            if mesh.cls not in rules.OPENING_CLASSES:
+                continue
+            tris = mesh.vertices[mesh.faces]
+            # Every triangle against every wall: (faces, walls, corners, xy).
+            rel = tris[:, None, :, :2] - starts[None, :, None, :]
+            along = np.einsum("fwvk,wk->fwv", rel, units)
+            centre = np.clip(along.mean(axis=2), 0.0, lengths)
+            offset = rel.mean(axis=2) - centre[..., None] * units[None]
+            nearest = np.argmin(np.linalg.norm(offset, axis=2), axis=1)
+            rows = np.arange(len(tris))
+            reach = np.linalg.norm(offset[rows, nearest], axis=1)
+            lo = along[rows, nearest].min(axis=1)
+            hi = along[rows, nearest].max(axis=1)
+            bottom = tris[:, :, 2].min(axis=1)
+            for f in np.flatnonzero(reach <= _OPENING_REACH_M):
+                found[int(nearest[f])].append(
+                    rules.Opening(
+                        lo_m=float(lo[f]),
+                        hi_m=float(hi[f]),
+                        bottom_m=float(bottom[f]),
+                        cls=mesh.cls,
+                    )
+                )
+
+    return tuple(
+        dataclasses.replace(wall, openings=_merge_openings(pieces)) if pieces else wall
+        for wall, pieces in zip(walls, found, strict=True)
+    )
+
+
+def _merge_openings(pieces: Sequence[rules.Opening]) -> tuple[rules.Opening, ...]:
+    """Merge overlapping stretches of one wall into whole openings, sorted along it.
+
+    A merged opening takes the class of its lowest piece, so a glazed door
+    stays a door rather than becoming a window because of its glass.
+    """
+    merged: list[rules.Opening] = []
+    for piece in sorted(pieces, key=lambda o: o.lo_m):
+        if merged and piece.lo_m <= merged[-1].hi_m + _OPENING_MERGE_M:
+            last = merged[-1]
+            low = piece if piece.bottom_m < last.bottom_m else last
+            merged[-1] = rules.Opening(
+                lo_m=last.lo_m,
+                hi_m=max(last.hi_m, piece.hi_m),
+                bottom_m=low.bottom_m,
+                cls=low.cls,
+            )
+        else:
+            merged.append(piece)
+    return tuple(merged)
 
 
 def _resolve_count(
@@ -339,6 +436,7 @@ def _bake(
                     wall_normal=item.wall_normal,
                     asset_id=item.spec.asset_id,
                     background=item.background,
+                    materials=mesh.runs,
                 )
             )
 
@@ -363,14 +461,36 @@ def _write_obj(path: Path, mesh: BuiltMesh, asset_id: str) -> None:
     fixed-precision coordinates and no library version banner are what let a
     reseeded run produce identical files, which is the determinism guarantee in
     spec.md Module 1.
+
+    A ``usemtl`` line precedes each of :attr:`~canopy.worldgen.assets.BuiltMesh.runs`
+    that names a material, since ``mesh.faces`` is already ordered to match --
+    this is how the viewer recovers each face's authored material straight from
+    the file it already reads. The sim's own OBJ parser only looks at ``v`` and
+    ``f`` lines (:func:`canopy.sim.scene.load_geometry`), so this is invisible
+    to sensing.
     """
     lines = [f"# canopy {mesh.cls.name} from asset {asset_id}", f"o {path.stem}"]
     lines.extend(
         f"v {x:.{_OBJ_PRECISION}f} {y:.{_OBJ_PRECISION}f} {z:.{_OBJ_PRECISION}f}"
         for x, y, z in mesh.vertices
     )
+    # Runs that under-cover the faces would silently drop triangles from the
+    # file; fail here, as the viewer does, rather than ship a holed mesh.
+    covered = sum(run.n_faces for run in mesh.runs)
+    if covered != len(mesh.faces):
+        msg = (
+            f"asset {asset_id!r} ({mesh.cls.name}): material runs cover {covered} faces "
+            f"but the mesh has {len(mesh.faces)}"
+        )
+        raise WorldgenError(msg)
     # OBJ face indices are 1-based.
-    lines.extend(f"f {a + 1} {b + 1} {c + 1}" for a, b, c in mesh.faces)
+    offset = 0
+    for run in mesh.runs:
+        if run.material:
+            lines.append(f"usemtl {run.material}")
+        chunk = mesh.faces[offset : offset + run.n_faces]
+        lines.extend(f"f {a + 1} {b + 1} {c + 1}" for a, b, c in chunk)
+        offset += run.n_faces
     path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
@@ -412,6 +532,7 @@ def save_manifest(manifest: SceneManifest, out_dir: Path | str) -> Path:
                 ),
                 "asset_id": obj.asset_id,
                 "background": obj.background,
+                "materials": [[run.material, list(run.rgb), run.n_faces] for run in obj.materials],
             }
             for obj in manifest.objects
         ],
@@ -475,6 +596,14 @@ def load_manifest(path: Path | str) -> SceneManifest:
                 ),
                 asset_id=str(o.get("asset_id", "")),
                 background=bool(o.get("background", False)),
+                materials=tuple(
+                    MaterialRun(
+                        material=str(m[0]),
+                        rgb=(int(m[1][0]), int(m[1][1]), int(m[1][2])),
+                        n_faces=int(m[2]),
+                    )
+                    for m in o.get("materials", [])
+                ),
             )
             for o in doc["objects"]
         ]

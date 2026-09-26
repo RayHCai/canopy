@@ -116,10 +116,15 @@
 
   <!-- Suggested battery sites, shown once mapping is complete. -->
   <section id="sites" class="sites" aria-label="Suggested battery sites" hidden>
+    <div id="site-summary" class="site-summary" aria-live="polite">
+      <span id="site-summary-verdict" class="site-summary-verdict"></span>
+      <p id="site-summary-text" class="site-summary-text"></p>
+    </div>
     <div id="site-card" class="site-card" aria-live="polite">
       <div class="site-head">
         <span class="site-swatch" aria-hidden="true"></span>
         <span id="site-title" class="site-title"></span>
+        <span id="site-verdict" class="site-verdict"></span>
         <span id="site-meta" class="site-meta"></span>
       </div>
       <ul id="site-warnings" class="site-warnings"></ul>

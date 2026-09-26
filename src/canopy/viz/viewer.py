@@ -57,12 +57,14 @@ range and colour alone, so the outlines show what the swarm worked out, not
 what the scene manifest says.
 
 Once mapping is complete -- the mission has left exploration -- the session
-asks the site stage for the best battery sites on the finished map
-(:func:`~canopy.site.suggest_sites`, rules from ``config/rules.yaml``) and
-every later frame carries them. They are computed on the simulation thread at
-the tick exploration ends and ride along in that tick's snapshot, so they
-appear on screen when the end of mapping does, not seconds before it. The page
-draws each site with the ``base_core_battery`` model, served like the drone.
+asks the site stage to judge the finished map against the checklist
+(:func:`~canopy.site.assess_site`, rules from ``config/rules.yaml``) and every
+later frame carries the result: an overall verdict, a short justification, and
+the offered sites, each with its own verdict. They are computed on the
+simulation thread at the tick exploration ends and ride along in that tick's
+snapshot, so they appear on screen when the end of mapping does, not seconds
+before it. The page draws each site with the ``base_core_battery`` model,
+served like the drone.
 """
 
 from __future__ import annotations
@@ -88,13 +90,20 @@ from canopy.contracts import (
     SceneGeometry,
     SceneManifest,
     SiteCandidate,
+    SiteVerdict,
     Vec3,
 )
-from canopy.errors import ConfigError, DependencyMissingError, SimulationError, SiteError
+from canopy.errors import (
+    ConfigError,
+    DependencyMissingError,
+    SimulationError,
+    SiteError,
+    WorldgenError,
+)
 from canopy.log import get_logger
 from canopy.planning import MissionRun
 from canopy.sim import RaySensor, load_geometry
-from canopy.site import SiteRules, load_site_rules, suggest_sites
+from canopy.site import SiteRules, assess_site, load_site_rules
 from canopy.worldgen import default_assets_dir, generate_field, read_mtl, read_obj
 
 if TYPE_CHECKING:
@@ -425,10 +434,14 @@ class ViewerSession:
         -------
         dict
             ``seed`` and ``objects``: per object its ``id``, ``cls`` (class
-            name), ``color`` (``[r, g, b]`` in ``[0, 1]``), ``background``,
-            ``tri_offset`` (its first global triangle id) and base64
-            ``positions`` (little-endian float32 ``xyz``, world Z-up) /
-            ``indices`` (little-endian uint32) into them.
+            name), ``color`` (``[r, g, b]`` in ``[0, 1]``, the flat class
+            colour, still what the reveal falls back to and what a photo
+            shades), ``background``, ``tri_offset`` (its first global triangle
+            id), base64 ``positions`` (little-endian float32 ``xyz``, world
+            Z-up) / ``indices`` (little-endian uint32) into them, and base64
+            ``colors`` (uint8 ``rgb`` per face, sRGB 0..255, in face order) --
+            present only when the object carries authored material runs,
+            i.e. :attr:`~canopy.contracts.SceneObject.materials` is non-empty.
         """
         with self._lock:
             return self._world_payload
@@ -636,29 +649,42 @@ class ViewerSession:
         }
 
     def _suggest_sites(self) -> dict[str, Any]:
-        """Site the battery on the finished map, as the page draws the result.
+        """Judge the finished map against the checklist, as the page draws the result.
 
         Caller holds ``_sim_lock``. A map with nothing to site against -- no
         meter, no wall beside it -- is an outcome to show, not an error to
         raise, so it comes back as an empty list with the reason.
         """
         try:
-            sites = suggest_sites(self._run.mapper.state, self._site_rules)
+            assessment = assess_site(self._run.mapper.state, self._site_rules)
         except SiteError as exc:
             _log.info("no battery site suggested: %s", exc)
             return {"sites": [], "message": str(exc), "battery": None}
-        _log.info("suggested %d battery site(s) at t=%.1f s", len(sites), self._run.t)
+        _log.info(
+            "battery siting: %s (%d site(s) offered) at t=%.1f s",
+            assessment.verdict.value,
+            len(assessment.sites),
+            self._run.t,
+        )
         battery = self._site_rules.battery
         return {
-            "sites": [self._site_entry(rank, site) for rank, site in enumerate(sites, start=1)],
+            "sites": [
+                self._site_entry(rank, site) for rank, site in enumerate(assessment.sites, start=1)
+            ],
             "message": None,
             "battery": [battery.width_m, battery.depth_m, battery.height_m],
+            "verdict": assessment.verdict.value,
+            "justification": assessment.justification,
         }
 
     def _site_entry(self, rank: int, site: SiteCandidate) -> dict[str, Any]:
         """One suggested site as the page draws it."""
         viewer = self._cfg.viewer
-        rgb = viewer.site_warning_rgb if site.warnings else viewer.site_rgb
+        rgb = {
+            SiteVerdict.PASS: viewer.site_rgb,
+            SiteVerdict.MANUAL_REVIEW: viewer.site_warning_rgb,
+            SiteVerdict.REJECT: viewer.site_reject_rgb,
+        }[site.verdict]
         return {
             "rank": rank,
             "pos": site.pos.tolist(),
@@ -667,6 +693,7 @@ class ViewerSession:
             "cost": site.cost,
             # JSON has no infinity: a rule with nothing to measure against reports none.
             "breakdown": {k: v if math.isfinite(v) else None for k, v in site.breakdown.items()},
+            "verdict": site.verdict.value,
             "warnings": list(site.warnings),
             "color": [c / 255.0 for c in rgb],
         }
@@ -691,22 +718,45 @@ def _world_payload(seed: int, manifest: SceneManifest, geometry: SceneGeometry) 
     Built once per seed rather than per call: encoding a quarter-million
     triangles is a few milliseconds, but there is no reason to redo it every
     time the page asks.
+
+    Raises
+    ------
+    WorldgenError
+        If an object's :attr:`~canopy.contracts.SceneObject.materials` runs do
+        not add up to its face count. :meth:`~canopy.worldgen.assets.AssetLibrary.build`
+        guarantees they do, so this can only mean a hand-built or hand-edited
+        manifest, and painting it anyway would silently misalign colours past
+        wherever the counts first diverge.
     """
     objects = []
     for obj in manifest.objects:
         vertices = geometry.vertices[obj.obj_id]
         faces = geometry.faces[obj.obj_id]
-        objects.append(
-            {
-                "id": obj.obj_id,
-                "cls": obj.cls.name,
-                "color": [c / 255.0 for c in obj.color],
-                "background": obj.background,
-                "tri_offset": int(geometry.obj_tri_offset[obj.obj_id]),
-                "positions": _b64(vertices.astype(np.float32)),
-                "indices": _b64(faces.astype(np.uint32).ravel()),
-            }
-        )
+        entry: dict[str, Any] = {
+            "id": obj.obj_id,
+            "cls": obj.cls.name,
+            "color": [c / 255.0 for c in obj.color],
+            "background": obj.background,
+            "tri_offset": int(geometry.obj_tri_offset[obj.obj_id]),
+            "positions": _b64(vertices.astype(np.float32)),
+            "indices": _b64(faces.astype(np.uint32).ravel()),
+        }
+        if obj.materials:
+            covered = sum(run.n_faces for run in obj.materials)
+            if covered != len(faces):
+                msg = (
+                    f"object {obj.obj_id} ({obj.cls.name}): material runs cover {covered} "
+                    f"faces, but the mesh has {len(faces)}"
+                )
+                raise WorldgenError(msg)
+            entry["colors"] = _b64(
+                np.repeat(
+                    np.array([run.rgb for run in obj.materials], dtype=np.uint8),
+                    [run.n_faces for run in obj.materials],
+                    axis=0,
+                )
+            )
+        objects.append(entry)
     return {"seed": seed, "objects": objects}
 
 

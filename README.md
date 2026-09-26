@@ -114,6 +114,8 @@ of placement needs a Python rule. See
 config/          all tunables (default.yaml) and placement rules (rules.yaml)
 assets/          models/index.yaml is the model + generation-rule database;
                  obj_export/ holds the authored meshes it draws from
+scripts/         build_props.py authors those meshes (low-poly, in code);
+                 `make props` regenerates them
 src/canopy/      the monolith: one subpackage per module boundary
   contracts.py   every dataclass that crosses a boundary
   config.py      YAML -> frozen, validated dataclasses

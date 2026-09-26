@@ -10,7 +10,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'setup', 'lock', 'lint', 'format', 'typecheck',
-                 'test', 'test-cov', 'check', 'fly', 'view', 'clean')]
+                 'test', 'test-cov', 'check', 'fly', 'view', 'props', 'clean')]
     [string]$Task = 'help',
 
     # Extra arguments forwarded to the underlying command.
@@ -44,6 +44,7 @@ switch ($Task) {
             @{ n = 'check';     d = 'Everything CI runs' }
             @{ n = 'fly';       d = 'Single-drone flight check, kinematic' }
             @{ n = 'view';      d = 'Open the Canopy desktop viewer' }
+            @{ n = 'props';     d = 'Rebuild the model library props from scripts/build_props.py' }
             @{ n = 'clean';     d = 'Remove caches and build artefacts' }
         ) | ForEach-Object { Write-Host ('  {0,-12} {1}' -f $_.n, $_.d) }
     }
@@ -72,6 +73,7 @@ switch ($Task) {
     }
     'fly'       { Invoke-Step (@('uv', 'run', 'canopy-fly') + $Extra) }
     'view'      { Invoke-Step (@('uv', 'run', 'canopy-view') + $Extra) }
+    'props'     { Invoke-Step (@('uv', 'run', 'python', 'scripts/build_props.py', '--catalog') + $Extra) }
     'clean' {
         foreach ($p in '.pytest_cache', '.ruff_cache', '.mypy_cache', 'htmlcov',
                        'coverage.xml', '.coverage') {

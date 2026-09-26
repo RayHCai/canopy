@@ -60,6 +60,24 @@ materials:
   wood_light: FENCE
 
 # ---------------------------------------------------------------------------
+# Palette: display colour (sRGB 0..255) for a material, viewer-only.
+#
+# A `mesh:` model's authored MTL already gives the viewer a per-material
+# colour; a `parts:` model has no MTL at all, so without this every one of its
+# materials would paint in its class's one flat CLASS_COLORS shade. This is
+# what gives, say, a `parts:` house's `roof_shingle` faces their own colour
+# distinct from its `shingle_light` ones. Sensing is unaffected: the ranger
+# still reports CLASS_COLORS, per contracts.SceneObject.color.
+# ---------------------------------------------------------------------------
+palette:
+  roof_shingle: [92, 84, 80]
+  shingle_light: [118, 110, 106]
+  window_glass: [150, 200, 230]
+  door_red: [160, 48, 40]
+  garage_door: [236, 234, 228]
+  concrete: [190, 188, 182]
+
+# ---------------------------------------------------------------------------
 # Roles: the slots in a property. Each names a placement rule, how many to
 # place, and the tag that selects candidate models.
 #
@@ -115,6 +133,9 @@ roles:
       drop_offset_m: 0.35
       corner_clearance_m: 1.2
       standoff_m: 0.02
+      # Kept clear either side of the house model's own windows and doors: the
+      # whole assembly goes on bare wall.
+      opening_clearance_m: 0.3
       # Ten of the twelve authored homes run meter -> nipple -> breaker panel;
       # the other two go meter -> LB riser -> through the wall.
       p_panel: 0.82
@@ -130,13 +151,15 @@ roles:
       bottom_height_m: 0.0
       corner_clearance_m: 1.0
       standoff_m: 0.02
+      opening_clearance_m: 0.3
       avoid_meter_wall: true
 
   ac_unit:
     tag: ac_unit
     rule: wall_adjacent
     count: {range: [1, 2]}
-    params: {standoff_m: 0.5, corner_clearance_m: 1.0}
+    # May stand under a window it does not reach, never in front of a door.
+    params: {standoff_m: 0.5, corner_clearance_m: 1.0, opening_clearance_m: 0.3}
 
   bush:
     tag: bush
@@ -299,11 +322,11 @@ models:
   house_brick_two_story:
     cls: WALL
     tags: [house, house_authored]
-    mesh: obj_export/homes/home_01/home_01_pre_install.obj
-    # One `o` group out of a whole authored home scene: the shell only, without
-    # the home's baked-in meter, bushes and trees, which this generator places
-    # itself. All twelve authored homes share this identical shell.
-    object: house
+    # The shell only -- the meter, bushes and trees are placed by this
+    # generator. Built by scripts/build_props.py at exactly the envelope of the
+    # home scenes' shell (obj_export/homes/*), so every seed's layout is the
+    # same as it was against that shell.
+    mesh: obj_export/assets/house_ranch.obj
     # 14.90 x 11.02 x 5.36 m as authored. Uniform scale is the only size
     # variation available from a single shell; a second shell would be one more
     # entry here.
@@ -312,6 +335,18 @@ models:
     # solver's cost map is built in world axes.
     yaw_choices_deg: [0, 90, 180, 270]
     max_edge_m: 0.4
+    # Parts that project past the brick. The wall-mounting rules take the WALL
+    # bounding box as the wall plane, so anything standing more than a few
+    # centimetres proud of it must be another class or every meter would float
+    # in front of the house. Glazing in a door is part of the door.
+    materials:
+      barge_board: ROOF
+      downspout: ROOF
+      chimney: ROOF
+      chimney_cap: ROOF
+      porch_roof: ROOF
+      garage_line: GARAGE_DOOR
+      door_glass: DOOR
 
   # Procedural massing. A house is a union of these blocks, so each one is a
   # plain box and the variety comes from their dimensions and arrangement.
@@ -392,10 +427,13 @@ models:
   garage_door_panel:
     cls: GARAGE_DOOR
     tags: [garage_door]
+    # A painted sectional door, not the timber colour the class shares with
+    # DOOR -- but only to look at. The `garage_door` material takes its
+    # display colour from the palette; what the sensor sees stays
+    # CLASS_COLORS[GARAGE_DOOR], because a sensed off-white sits between the
+    # wall and door colours and no colour rule could then tell it from a wall.
     parts:
-      - {kind: box}
-    # A painted sectional door, not the timber colour the class shares with DOOR.
-    color: [232, 230, 224]
+      - {kind: box, material: garage_door}
     max_edge_m: 0.5
 
   # -- service equipment ----------------------------------------------------
@@ -452,20 +490,14 @@ models:
     scale: [0.9, 1.15]
     face_axis: "+z"
     # An outbuilding is one thing to the survey: it is a flight obstacle and
-    # never a battery site. Without these overrides the library-wide map would
-    # read its concrete pad as a driveway, its trim as a fence and its roof as
-    # the house roof, all of which would mislead the site solver.
+    # never a battery site. Its materials are named so that none lands in the
+    # library-wide map (its pad is `shed_pad`, not `concrete`), except its
+    # door, which the map would count as a house door, and the door's
+    # `wood_dark` brace, which it would read as a fence.
     materials:
-      concrete: SHED
-      wood_dark: SHED
-      shingle: SHED
-      shingle_light: SHED
       shed_door: SHED
-      shed_siding: SHED
-      shed_trim: SHED
-      window_glass: SHED
+      wood_dark: SHED
       galvanized: SHED
-      drone_black: SHED
 
   fence_panel:
     cls: FENCE

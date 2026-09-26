@@ -320,6 +320,68 @@ def test_openings_stay_clear_of_wall_mounted_equipment(houses: dict[int, SceneMa
                 )
 
 
+#: Authored-shell seeds whose equipment, placed without regard to the shell's
+#: own openings, landed on one: 0 stood the AC unit in front of the garage
+#: door, 1 hung the meter over a window, 19 put it on the garage door.
+_AUTHORED_CROWDED_SEEDS = (0, 1, 19)
+_SHELL_OPENINGS = frozenset({Cls.WINDOW, Cls.DOOR, Cls.GARAGE_DOOR})
+
+
+def _triangles(path: Path) -> np.ndarray:
+    """Return an OBJ file's faces as vertex coordinates, shape ``(faces, 3, 3)``."""
+    verts: list[list[float]] = []
+    faces: list[list[int]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("v "):
+            verts.append([float(v) for v in line.split()[1:4]])
+        elif line.startswith("f "):
+            faces.append([int(v.split("/")[0]) - 1 for v in line.split()[1:4]])
+    return np.asarray(verts, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]
+
+
+@pytest.mark.parametrize("seed", _AUTHORED_CROWDED_SEEDS)
+def test_equipment_stays_off_the_authored_shells_openings(
+    seed: int, cfg: Config, tmp_path: Path
+) -> None:
+    manifest = generate_field(seed, cfg, out_dir=tmp_path)
+    surveyed = [o for o in manifest.objects if not o.background]
+    assert _house_model(manifest) == "house_brick_two_story", f"seed {seed} drew massing"
+
+    wall_verts = np.concatenate(
+        [_triangles(Path(o.mesh_path)).reshape(-1, 3) for o in surveyed if o.cls is Cls.WALL]
+    )
+    openings = np.concatenate(
+        [_triangles(Path(o.mesh_path)) for o in surveyed if o.cls in _SHELL_OPENINGS]
+    )
+    equipment = [o for o in surveyed if o.cls in _MOUNTED | {Cls.AC_UNIT}]
+    assert any(o.cls is Cls.METER for o in equipment)
+
+    for item in equipment:
+        assert item.wall_normal is not None
+        normal = item.wall_normal[:2]
+        along = np.array([-normal[1], normal[0]])
+        # The shell is a rectangle in plan, so its wall on this side is the
+        # outermost brick in the direction of the normal.
+        plane = float((wall_verts[:, :2] @ normal).max())
+        on_wall = np.abs(openings.mean(axis=1)[:, :2] @ normal - plane) < 0.5
+        tris = openings[on_wall]
+        lo, hi = _bbox_3d(Path(item.mesh_path))
+        if item.cls is Cls.AC_UNIT:
+            # A condenser may stand under a window, just not in front of
+            # anything that comes down to its height.
+            tris = tris[tris[:, :, 2].min(axis=1) < hi[2]]
+        corners = np.array([[lo[0], lo[1]], [hi[0], hi[1]]])
+        span = sorted(float(v) for v in corners @ along)
+        t_along = tris[:, :, :2] @ along
+        overlap = np.minimum(t_along.max(axis=1), span[1]) - np.maximum(
+            t_along.min(axis=1), span[0]
+        )
+        assert not np.any(overlap > 0.0), (
+            f"seed {seed}: {item.asset_id} {item.obj_id} overlaps the shell's "
+            f"openings by up to {overlap.max():.2f} m along the wall"
+        )
+
+
 def _bbox_3d(path: Path) -> tuple[np.ndarray, np.ndarray]:
     """Return the ``(min, max)`` xyz bounding box of one OBJ file."""
     verts = np.asarray(
