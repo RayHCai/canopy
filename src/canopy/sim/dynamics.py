@@ -15,6 +15,7 @@ upstream of here knows which backend it is driving.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -233,19 +234,28 @@ class PyBulletDynamics:
         initial_rpys = np.array([[0.0, 0.0, s.yaw] for s in ordered], dtype=np.float64)
         drone_model = mods["DroneModel"](self._physics.drone_model)
 
-        self._env = mods["CtrlAviary"](
-            drone_model=drone_model,
-            num_drones=len(ordered),
-            initial_xyzs=initial_xyzs,
-            initial_rpys=initial_rpys,
-            physics=mods["Physics"]("pyb"),
-            pyb_freq=self._physics.pyb_freq,
-            ctrl_freq=self._physics.ctrl_freq,
-            gui=self._physics.gui,
-            record=False,
-            obstacles=False,
-            user_debug_gui=False,
-        )
+        with warnings.catch_warnings():
+            # Upstream declares its gymnasium Box spaces in float64 and gymnasium
+            # warns as it casts them to float32. Benign, not ours to fix, and it
+            # would otherwise print on every physics run.
+            warnings.filterwarnings(
+                "ignore",
+                message=".*precision lowered by casting to float32",
+                category=UserWarning,
+            )
+            self._env = mods["CtrlAviary"](
+                drone_model=drone_model,
+                num_drones=len(ordered),
+                initial_xyzs=initial_xyzs,
+                initial_rpys=initial_rpys,
+                physics=mods["Physics"]("pyb"),
+                pyb_freq=self._physics.pyb_freq,
+                ctrl_freq=self._physics.ctrl_freq,
+                gui=self._physics.gui,
+                record=False,
+                obstacles=False,
+                user_debug_gui=False,
+            )
         self._controllers = [mods["DSLPIDControl"](drone_model=drone_model) for _ in ordered]
         self._obs, _ = self._env.reset()
         _log.debug(
