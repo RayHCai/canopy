@@ -31,6 +31,7 @@ __all__ = [
     "DroneState",
     "DroneTask",
     "MapState",
+    "MaterialRun",
     "Observation",
     "Occ",
     "OrientedBox",
@@ -102,7 +103,7 @@ class SiteVerdict(StrEnum):
     JSON payload without a translation table.
     """
 
-    PASS = "pass"
+    PASS = "pass"  # noqa: S105 -- an enum value, not a credential
     MANUAL_REVIEW = "manual_review"
     REJECT = "reject"
 
@@ -138,6 +139,28 @@ TREE_TRUNK_COLOR: Rgb = (100, 70, 40)
 TaskKind: TypeAlias = str
 
 
+@dataclass(frozen=True, slots=True)
+class MaterialRun:
+    """A run of consecutive faces of one :class:`SceneObject` sharing one authored material.
+
+    A single semantic class -- ``ROOF``, say -- can be built from several
+    authored materials (weathered shingle next to fresh shingle), and those
+    materials are what carry a mesh's real per-face colour variation. A mesh's
+    faces are grouped into runs by material, in face order, so the viewer can
+    paint each run without needing a per-face material index of its own.
+
+    Plain values only, so the generated ``__eq__`` is kept: a manifest round
+    trip is checked by comparing runs directly.
+    """
+
+    material: str
+    """The authored material name, e.g. ``"roof_shingle"``. Never read back to a class."""
+    rgb: Rgb
+    """Display colour (sRGB 0..255) for this run's faces. Viewer-only."""
+    n_faces: int
+    """How many consecutive faces, starting after the previous run's, this covers."""
+
+
 @dataclass(slots=True, eq=False)
 class SceneObject:
     """One mesh in the generated property, with its pose already baked in."""
@@ -148,7 +171,8 @@ class SceneObject:
     mesh_path: str
     """OBJ file in world coordinates."""
     color: Rgb
-    """True RGB, used for the reveal and for photos."""
+    """True RGB: the flat colour the ranger senses and photos shade with, and
+    the viewer's fallback when :attr:`materials` is empty."""
     wall_normal: Vec3 | None = None
     """Outward wall normal. Set for meter, door and window; ``None`` otherwise."""
     asset_id: str = ""
@@ -168,6 +192,16 @@ class SceneObject:
     colour from the start. Keeping it in the manifest rather than inventing it in
     the viewer is what keeps the manifest the single source of truth for sensing
     and visualisation.
+    """
+    materials: tuple[MaterialRun, ...] = ()
+    """Display colours of the mesh's faces, as consecutive runs in face order.
+
+    ``n_faces`` across the tuple sums to the mesh's face count. Viewer-only: it
+    lets the reveal and the static render show each authored material's own
+    colour instead of one flat class colour, without touching what the ranger
+    senses -- :attr:`color` remains that, and is also the fallback drawn when
+    this is empty (objects built without a library, or with no display colour
+    of their own).
     """
 
 
@@ -421,7 +455,9 @@ class SiteCandidate:
     wall_normal: Vec3
     cost: float
     breakdown: dict[str, float]
-    """Per-term contributions: ``conduit_m``, ``bushes``, penalties."""
+    """Each placement rule's measure at this site, keyed by :attr:`canopy.site.Rule.key`
+    (``harness_run``, ``free_space``, ``clear_of_gas_meter``, ...), in the rule's own
+    unit (usually metres)."""
     conduit: Points
     """Polyline from meter to site, shape ``(K, 3)``."""
     bushes_to_remove: list[int]

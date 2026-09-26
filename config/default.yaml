@@ -79,11 +79,10 @@ perception:
       thickness_m: [0.0, 0.2]
       near_cls: WALL
       near_m: 0.35
-    - cls: GARAGE_DOOR        # authored and neighbour houses paint this the same colour as DOOR;
-      # the procedural off-white variant (232,230,224) is a second, disjoint colour population
-      # that no single HSV box can add without also matching WALL (225,205,170), which sits
-      # between the two in both hue and saturation. Only the DOOR-coloured variant is detected
-      # here; it is told apart from DOOR by size alone (see tests/perception/test_detector.py).
+    - cls: GARAGE_DOOR        # senses the same colour as DOOR on every house (the procedural
+      # panel's off-white is display-only, ADR 0014), so it is told apart from DOOR by size
+      # alone. Keep the band clear of off-white: WALL (225,205,170) sits between it and this
+      # brown in hue and saturation (see tests/perception/test_detector.py).
       hue_deg: [20, 36]
       sat: [0.45, 0.72]
       val: [0.13, 0.55]
@@ -99,11 +98,11 @@ perception:
       hue_deg: [195, 220]     # reported (no bottom_m), since the siting rule filters by height
       sat: [0.3, 0.55]
       val: [0.25, 1.0]
-      z_m: [0.5, 6.0]
+      z_m: [0.0, 6.0]         # the authored house's patio "window" reaches down to the porch slab
       cell_m: 0.1
       min_hits: 20
-      length_m: [1.0, 1.35]   # the taller of (1.2 m height, 0.9-1.3 m width) sorts longest
-      width_m: [0.8, 1.3]     # the shorter of the two
+      length_m: [1.0, 2.3]    # covers every pane, up to the authored house's 1.9 x 2.15 patio door
+      width_m: [0.8, 2.0]     # its shorter extent
       thickness_m: [0.0, 0.15]
     - cls: METER              # yellow box on a wall, around chest height
       hue_deg: [44, 60]
@@ -259,7 +258,15 @@ viewer:
     - {cls: METER, rgb: [125, 190, 255]}     # light blue
     - {cls: CONDUIT, rgb: [125, 190, 255]}   # light blue
     - {cls: BUSH, rgb: [255, 125, 125]}      # light red
+    - {cls: DOOR, rgb: [200, 150, 255]}      # light purple: openings siting keeps clear of
+    - {cls: GARAGE_DOOR, rgb: [200, 150, 255]}
+    - {cls: WINDOW, rgb: [200, 150, 255]}
+    - {cls: GAS_METER, rgb: [255, 120, 220]} # magenta: the safety-critical 3 ft keep-out
+    - {cls: AC_UNIT, rgb: [120, 230, 200]}   # light teal: equipment a battery may stand beside
+    - {cls: PANEL, rgb: [120, 230, 200]}
   detection_default_rgb: [255, 255, 255]
-  # Outline of each suggested battery site (canopy.site, config/rules.yaml).
-  site_rgb: [255, 230, 120]          # light yellow: meets every placement rule
-  site_warning_rgb: [255, 160, 70]   # orange: breaks a rule, shown with its warnings
+  # Outline of each suggested battery site (canopy.site, config/rules.yaml),
+  # by that site's own SiteVerdict.
+  site_rgb: [255, 230, 120]          # light yellow: PASS
+  site_warning_rgb: [255, 160, 70]   # orange: MANUAL_REVIEW
+  site_reject_rgb: [220, 70, 70]     # red: REJECT (only shown when nothing passes)

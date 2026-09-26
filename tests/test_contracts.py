@@ -14,6 +14,9 @@ from canopy.contracts import (
     Occ,
     OrientedBox,
     Scan,
+    SiteAssessment,
+    SiteCandidate,
+    SiteVerdict,
 )
 
 
@@ -185,3 +188,33 @@ def test_observation_and_discovered_object_are_frozen() -> None:
         obs.t = 1.0  # type: ignore[misc]
     with pytest.raises(AttributeError):
         found.confidence = 1.0  # type: ignore[misc]
+
+
+def test_site_verdict_values_are_stable() -> None:
+    """PASS < MANUAL_REVIEW < REJECT is the ranking order the site stage relies on."""
+    assert [v.value for v in SiteVerdict] == ["pass", "manual_review", "reject"]
+
+
+def _site_candidate(verdict: SiteVerdict) -> SiteCandidate:
+    return SiteCandidate(
+        pos=np.zeros(3),
+        wall_normal=np.array([1.0, 0.0, 0.0]),
+        cost=0.0,
+        breakdown={},
+        conduit=np.zeros((2, 3)),
+        bushes_to_remove=[],
+        verdict=verdict,
+    )
+
+
+def test_site_candidate_and_assessment_have_no_generated_eq() -> None:
+    """A generated __eq__ would raise on NumPy array comparison, as for the other array types."""
+    a = _site_candidate(SiteVerdict.PASS)
+    b = _site_candidate(SiteVerdict.PASS)
+    assert a != b  # identity comparison, and crucially it does not raise
+    assert a == a  # noqa: PLR0124 -- identity comparison is the point
+
+    assessment = SiteAssessment(
+        verdict=SiteVerdict.PASS, sites=(a,), justification="fine", n_candidates=1
+    )
+    assert assessment == assessment  # noqa: PLR0124 -- identity comparison is the point

@@ -437,9 +437,11 @@ class ViewerCfg:
     detection_default_rgb: tuple[int, int, int]
     """Outline colour for a detected class with no entry in ``detection_colors``."""
     site_rgb: tuple[int, int, int]
-    """Outline colour of a suggested battery site that meets every placement rule."""
+    """Outline colour of a suggested battery site whose verdict is PASS."""
     site_warning_rgb: tuple[int, int, int]
-    """Outline colour of a suggested site that breaks a required rule."""
+    """Outline colour of a suggested site whose verdict is MANUAL_REVIEW."""
+    site_reject_rgb: tuple[int, int, int]
+    """Outline colour of a suggested site whose verdict is REJECT."""
 
     def validate(self) -> None:
         """Raise :class:`ConfigError` unless the default swarm fits the limit."""
@@ -460,6 +462,7 @@ class ViewerCfg:
         _check_rgb(self.detection_default_rgb, "viewer.detection_default_rgb")
         _check_rgb(self.site_rgb, "viewer.site_rgb")
         _check_rgb(self.site_warning_rgb, "viewer.site_warning_rgb")
+        _check_rgb(self.site_reject_rgb, "viewer.site_reject_rgb")
 
 
 @dataclass(frozen=True, slots=True)

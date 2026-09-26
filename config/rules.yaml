@@ -1,26 +1,32 @@
 # ---------------------------------------------------------------------------
 # Battery siting rules (canopy.site), read once the swarm has mapped the house.
 #
-# PLACEHOLDER VALUES -- these stand in for the real SSR checklist, which is a
-# declared non-goal (spec.md "Non-goals"). Replace wholesale; do not tune.
+# These encode the product's "Battery Space" photo-review checklist (ADR
+# 0013): each rule below is a geometric translation of one checklist item,
+# named in its comment. Tune the numbers to match a checklist change; adding
+# an item the checklist gained needs a new Rule subclass (canopy.site.rules).
 #
 # Units: metres. Every candidate site is a battery standing on the ground with
 # its back against a traced house wall, so "along the edge of the house" is
 # built in rather than a rule.
 # ---------------------------------------------------------------------------
 
-battery:                  # bounding box of assets/obj_export/assets/base_core_battery.obj
-  width_m: 0.93           # along the wall, including its side-mounted disconnect
-  depth_m: 0.58           # out from the wall
-  height_m: 1.0
+battery:                  # bounding box used for every clearance rule
+  width_m: 0.79           # 31 in, along the wall
+  depth_m: 0.56           # 22 in, out from the wall
+  height_m: 0.91          # 36 in
+  # The OBJ asset (assets/obj_export/assets/base_core_battery.obj) is 0.93 m
+  # wide because it includes a side-mounted disconnect; the checklist's own
+  # battery has none, so the siting box is narrower than the model drawn at
+  # each suggested site. Leave the asset alone.
 
 placement:
   step_m: 0.1             # candidate spacing along each wall
   corner_margin_m: 0.1    # gap between the battery's side and the end of its wall
-  top_k: 3                # sites suggested
-  min_separation_m: 1.0   # between suggested sites, so they are distinct options
-  fill_with_flagged: true # top up with rule-breaking sites when fewer than top_k pass
-                          # (they are always offered, flagged, when none pass)
+  top_k: 3                # sites offered
+  min_separation_m: 1.0   # between offered sites, so they are distinct options
+  fill_with_flagged: true # top up with non-PASS sites when fewer than top_k pass cleanly
+                          # (they are always offered when none pass)
 
 outline:                  # tracing the walls from occupancy (canopy.site.outline)
   band_z_m: [1.5, 2.8]    # a wall column fills this band; bushes, meters and fences don't
@@ -31,32 +37,135 @@ outline:                  # tracing the walls from occupancy (canopy.site.outlin
 
 # Each entry is one registered rule (canopy.site.rules; `rule:` is its name).
 # Every rule is both a constraint and a cost factor:
-#   required: true (default)  a site that fails is flagged, ranked after every
-#                             site that passes, and shown with a warning
+#   on_fail: fail (default)   a non-marginal failure rejects the site; a
+#                             marginal one (close enough a measurement or
+#                             another photo could clear it) sends it to
+#                             manual review instead
+#   on_fail: review           any failure sends the site to review, never to
+#                             reject -- for checks the checklist itself asks
+#                             a member to sign off on rather than refuse
+#   on_fail: ignore           never affects the verdict, a pure preference
 #   weight: 1.0 (default)     scales the rule's cost into the site's score;
-#                             lower scores rank first
+#                             lower scores rank first within the same verdict
 # To add a kind of rule, subclass canopy.site.Rule and decorate it with
 # canopy.site.register_rule; it can then be listed here by name.
 rules:
-  - rule: meter_distance  # battery's nearest edge to the meter, in plan; cost = distance
-    max_m: 1.83           # 6 ft
-  - rule: clear_of        # shortest gap to any discovered bush; cost = shortfall under prefer_m
-    cls: BUSH
-    min_m: 0.5
-    prefer_m: 1.0
+  # "battery_distance_ft": the harness run from the meter, measured along the
+  # walls (it is a cable fastened to one), not as the crow flies.
+  - rule: harness_run
+    pass_max_m: 4.88        # 16 ft, clean pass
+    max_m: 7.92             # 26 ft, beyond this nothing saves the site
+    hard_block: [GARAGE_DOOR]  # no route crosses a garage door's track
+    review_block: [DOOR]       # running over a doorway is occasionally allowed
+    wall_tol_m: 0.3
+
+  # "front_clearance_ft": the working alley in front of the battery, and that
+  # it has actually been seen (an unmapped alley is not an approved one).
+  - rule: free_space
+    side_m: 0.06           # each side, so the alley is 3 ft wider than the battery
+    min_reach_m: 1.37       # 4.5 ft: closer than this is a hard fail
+    review_reach_m: 1.68    # 5.5 ft: the full working alley
+    except_cls: [BUSH]      # bushes are clear_of BUSH's job, which can name them
+
+  # "6.5 ft headroom": nothing above the battery up to service height.
+  - rule: headroom
+    clear_m: 1.98           # 6.5 ft
+
+  # "3 ft from the gas meter": safety-critical, so it costs double and keeps
+  # a wider band before a clean pass.
+  - rule: clear_of
+    cls: GAS_METER
+    plan: true
+    min_m: 0.91              # 3 ft
+    review_m: 1.07           # a little short of 3.5 ft is a review, not a fail
     weight: 2.0
-  - rule: clear_of        # never mount over the service conduit running from the meter
+
+  # "3 ft from the driveway (more where one wraps around the spot)": prefer_m
+  # is stricter than the pass/review band, since a drive that runs past on
+  # more than one side makes every extra foot worth more.
+  - rule: clear_of
+    cls: DRIVEWAY
+    plan: true
+    min_m: 0.91               # 3 ft
+    review_m: 1.52            # 5 ft
+    prefer_m: 1.52
+
+  # "not in a doorway or its swing": swing grows the door's own footprint by
+  # its width on the side it opens, so the zone in front of it counts too.
+  - rule: clear_of
+    cls: DOOR
+    plan: true
+    swing: true
+    min_m: 0.1
+
+  # Same idea for a garage door, but it doesn't swing outward, so no swing zone.
+  - rule: clear_of
+    cls: GARAGE_DOOR
+    plan: true
+    min_m: 0.1
+
+  # "not under an operable window": ground-floor windows only -- perception
+  # cannot tell fixed glass from operable, so every one below 2 m counts.
+  - rule: clear_of
+    cls: WINDOW
+    plan: true
+    below_m: 2.0
+    min_m: 0.1
+
+  # Never directly under the meter or the panel it feeds.
+  - rule: clear_of
+    cls: METER
+    plan: true
+    min_m: 0.15
+  - rule: clear_of
+    cls: PANEL
+    plan: true
+    min_m: 0.15
+
+  # Beside the AC unit or a conduit run is fine; on top of one is not, so
+  # this stays a 3D check rather than a plan one.
+  - rule: clear_of
+    cls: AC_UNIT
+    min_m: 0.05
+  - rule: clear_of
     cls: CONDUIT
     min_m: 0.05
-  - rule: free_space      # nothing mapped in the battery's footprint or working space
-    front_m: 0.9          # clearance kept free in front of it
-    except_cls: [BUSH]    # bushes are clear_of BUSH's job, which can name them
-    # Reads occupancy, so it catches what perception has no class for (AC unit,
-    # gas meter, shed). Anything within wall_gap_m (0.3) of the wall -- such as
-    # a breaker panel -- is indistinguishable from the wall at map resolution.
-  # More rules, off by default:
-  # - rule: facing        # keep off south walls and the afternoon sun
-  #   avoid_deg: 180      # compass bearing, degrees clockwise from north (+Y)
-  #   within_deg: 45
-  #   required: false     # a preference, not a constraint
-  #   weight: 0.5
+
+  # Bushes are movable, so this is a preference (on_fail: ignore), not a
+  # constraint -- cost only, never a review or a reject.
+  - rule: clear_of
+    cls: BUSH
+    min_m: 0.0
+    prefer_m: 1.0
+    on_fail: ignore
+    weight: 0.5
+
+  # "street-facing front needs member sign-off": the street is on the
+  # house's -y side (worldgen puts the front door there), bearing 180.
+  - rule: facing
+    avoid_deg: 180
+    within_deg: 45
+    on_fail: review
+
+# ---------------------------------------------------------------------------
+# Checklist items NOT modelled here, because the world or perception has
+# nothing for the rule to read:
+#
+#   - permanent pool within 10 ft, and its tells (deck jets, a fence gate
+#     just for it) -- worldgen has no pool.
+#   - window wells -- windows are plain boxes, no well geometry.
+#   - vents -- no detector class.
+#   - gates and fence doors -- FENCE has no opening geometry.
+#   - decks and porches as standable ground, and slope underfoot -- the lot
+#     is flat and porches are not modelled as their own surface.
+#   - secondary vs. main walkway -- DRIVEWAY is the only paved-surface class.
+#   - the gas pipe run beyond the gas meter box -- perception stops at the
+#     box.
+#   - meter accessibility (can the utility read it after the battery goes
+#     in) -- no separate reach model from the meter's own side.
+#   - fixed vs. operable windows -- WINDOW does not distinguish them, so
+#     clear_of WINDOW treats every ground-floor window as operable.
+#   - the harness crossing a drivable surface -- harness_run's hard/review
+#     blocks are detector classes on the wall path, not the ground it
+#     crosses underneath.
+# ---------------------------------------------------------------------------

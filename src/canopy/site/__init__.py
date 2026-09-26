@@ -6,10 +6,11 @@ into a list of placement :class:`Rule` objects -- each both a constraint and a
 cost factor, and new ones added by :func:`register_rule` -- and
 :mod:`canopy.site.geometry` measures the clearances they need.
 :mod:`canopy.site.solver` lays candidates along the walls, has every rule judge
-them and keeps the best (:func:`suggest_sites`). Only what the swarm found is
-read, never the scene manifest.
+them, gives each site and the survey overall a verdict, and keeps the best
+(:func:`assess_site`). Only what the swarm found is read, never the scene
+manifest.
 
-Public API: :func:`suggest_sites`, :func:`load_site_rules`, and what a new rule
+Public API: :func:`assess_site`, :func:`load_site_rules`, and what a new rule
 needs -- :class:`Rule`, :func:`register_rule`, :class:`Candidates`,
 :class:`SiteContext`, :class:`RuleOutcome`, :class:`Boxes`, :func:`box_gap`,
 :func:`point_gap`.
@@ -25,7 +26,9 @@ from canopy.site.rules import (
     ClearOf,
     Facing,
     FreeSpace,
-    MeterDistance,
+    HarnessRoute,
+    HarnessRun,
+    Headroom,
     OutlineSpec,
     PlacementSpec,
     Rule,
@@ -38,7 +41,7 @@ from canopy.site.rules import (
     register_rule,
     rule_names,
 )
-from canopy.site.solver import find_meter, suggest_sites, wall_candidates
+from canopy.site.solver import assess_site, find_meter, wall_candidates
 
 __all__ = [
     "BatterySpec",
@@ -47,8 +50,10 @@ __all__ = [
     "ClearOf",
     "Facing",
     "FreeSpace",
+    "HarnessRoute",
+    "HarnessRun",
+    "Headroom",
     "HouseOutline",
-    "MeterDistance",
     "OutlineSpec",
     "PlacementSpec",
     "Rule",
@@ -56,6 +61,7 @@ __all__ = [
     "SiteContext",
     "SiteRules",
     "Wall",
+    "assess_site",
     "box_gap",
     "build_rule",
     "find_meter",
@@ -64,7 +70,6 @@ __all__ = [
     "point_gap",
     "register_rule",
     "rule_names",
-    "suggest_sites",
     "trace_house",
     "wall_candidates",
 ]

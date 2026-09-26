@@ -42,7 +42,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, TypeVar, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -355,14 +355,18 @@ def _grid(lo: float, hi: float, step: float) -> FloatArray:
 
 
 def _occ_at(state: MapState, plan: FloatArray, z: FloatArray) -> npt.NDArray[np.int64]:
-    """The occupancy state at each point; points off the mapped grid read FREE."""
+    """Look up the occupancy state at each point; points off the mapped grid read UNKNOWN.
+
+    Off the grid is the least-seen space there is, and a site must be seen to
+    be approved (ADR 0013), so it defers rather than passing as clear.
+    """
     points = np.concatenate([plan, z[..., None]], axis=-1)
     idx = np.floor((points - np.asarray(state.origin)) / state.voxel).astype(np.int64)
     shape = np.array(state.occ.shape)
     inside = ((idx >= 0) & (idx < shape)).all(axis=-1)
     clipped = np.clip(idx, 0, shape - 1)
     value = state.occ[clipped[..., 0], clipped[..., 1], clipped[..., 2]]
-    result: npt.NDArray[np.int64] = np.where(inside, value, int(Occ.FREE))
+    result: npt.NDArray[np.int64] = np.where(inside, value, int(Occ.UNKNOWN))
     return result
 
 
@@ -439,13 +443,18 @@ def _crosses_path(
     if not objects:
         return np.zeros(n, dtype=bool)
     boxes = Boxes.from_oriented([o.box for o in objects])
-    _, _, centre_d = house.arc_of(boxes.centre)
+    _, centre_s, centre_d = house.arc_of(boxes.centre)
     near_wall = centre_d <= wall_tol_m
     corners = boxes.corners().reshape(-1, 2)
     _, corner_s, _ = house.arc_of(corners)
     corner_s = corner_s.reshape(len(objects), 4)
-    lo, hi = corner_s.min(axis=1), corner_s.max(axis=1)
     perimeter = house.perimeter
+    # Corners are taken relative to the object's own centre, wrapped into
+    # (-perimeter/2, perimeter/2], because an object at the outline's start
+    # vertex -- an artefact of contour tracing, not geometry -- has corners
+    # near both 0 and the perimeter, and a raw min/max would span the house.
+    rel = np.mod(corner_s - centre_s[:, None] + perimeter / 2.0, perimeter) - perimeter / 2.0
+    lo, hi = centre_s + rel.min(axis=1), centre_s + rel.max(axis=1)
     if forward:
         off_lo = np.mod(lo - s_from, perimeter)
         off_hi = np.mod(hi - s_from, perimeter)
@@ -496,9 +505,14 @@ class HarnessRun(Rule):
         if self.wall_tol_m < 0.0:
             msg = f"{where}: wall_tol_m must not be negative, got {self.wall_tol_m}"
             raise ConfigError(msg)
-        for field_name, classes in (("hard_block", self.hard_block), ("review_block", self.review_block)):
+        for field_name, classes in (
+            ("hard_block", self.hard_block),
+            ("review_block", self.review_block),
+        ):
             if bad := [c for c in classes if c not in Cls.__members__]:
-                msg = f"{where}: {field_name} {bad} are not classes; expected {list(Cls.__members__)}"
+                msg = (
+                    f"{where}: {field_name} {bad} are not classes; expected {list(Cls.__members__)}"
+                )
                 raise ConfigError(msg)
 
     def route(self, candidates: Candidates, context: SiteContext) -> HarnessRoute:
@@ -543,7 +557,7 @@ class HarnessRun(Rule):
         )
 
         rows = np.arange(len(candidates))
-        both_blocked = ~usable.any(axis=1)
+        both_blocked = cast(BoolArray, ~usable.any(axis=1))
         chosen_length = np.where(both_blocked, np.inf, length[rows, idx])
         chosen_review = review_cross[rows, idx] & ~both_blocked
         return HarnessRoute(
@@ -560,20 +574,24 @@ class HarnessRun(Rule):
         route = self.route(candidates, context)
         passed = (route.length <= self.pass_max_m) & ~route.crosses_review
         marginal = ~passed & (route.length <= self.max_m) & ~route.both_blocked
-        return RuleOutcome(measure=route.length, passed=passed, marginal=marginal, cost=route.length)
+        return RuleOutcome(
+            measure=route.length, passed=passed, marginal=marginal, cost=route.length
+        )
 
     def explain(self, measure: float, *, marginal: bool) -> str:
         """Distinguish an impassable route from a long one from a door crossing."""
         if not math.isfinite(measure):
             blockers = " or a ".join(c.lower().replace("_", " ") for c in self.hard_block)
-            return f"No wall route to it that avoids a {blockers}" if blockers else "No wall route to it"
+            return (
+                f"No wall route to it that avoids a {blockers}"
+                if blockers
+                else "No wall route to it"
+            )
         if not marginal:
             return f"{_length(measure)} of harness run exceeds the {_length(self.max_m)} limit"
         if measure > self.pass_max_m:
-            return (
-                f"{_length(measure)} of harness run is over the preferred {_length(self.pass_max_m)}; "
-                "confirm the run before approving"
-            )
+            preferred = _length(self.pass_max_m)
+            return f"{_length(measure)} of harness run is over the preferred {preferred}; confirm"
         return "The shortest run crosses a door; confirm it is an acceptable path for the harness"
 
 
@@ -749,7 +767,7 @@ class FreeSpace(Rule):
     except_cls: tuple[str, ...] = ()
 
     def validate(self, where: str) -> None:
-        """Raise on a negative extent, an unordered reach, a non-positive step, or an unknown class."""
+        """Raise on a negative extent, an unordered reach, a bad step, or an unknown class."""
         super().validate(where)
         if min(self.side_m, self.wall_gap_m, self.ground_m) < 0.0 or not self.step_m > 0.0:
             msg = (
@@ -805,7 +823,9 @@ class FreeSpace(Rule):
     def explain(self, measure: float, *, marginal: bool) -> str:
         """Say whether the alley is unmapped, borderline, or blocked."""
         if marginal and not math.isfinite(measure):
-            return "The space in front of it hasn't been mapped; confirm it's clear before approving"
+            return (
+                "The space in front of it hasn't been mapped; confirm it's clear before approving"
+            )
         if marginal:
             return (
                 f"Only {_length(measure)} clear in front of it, short of the preferred "
@@ -881,7 +901,9 @@ class Headroom(Rule):
                 f"Space above the battery up to {_length(self.clear_m)} hasn't been mapped; "
                 "confirm it's clear before approving"
             )
-        return f"Something is mapped above the battery, blocking headroom to {_length(self.clear_m)}"
+        return (
+            f"Something is mapped above the battery, blocking headroom to {_length(self.clear_m)}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -98,9 +98,9 @@ def test_non_mapping_file_raises_config_error(tmp_path: Path) -> None:
 
 def test_rules_load(tmp_path: Path) -> None:
     rules = load_rules()
-    assert rules["battery"]["width_m"] == pytest.approx(0.93)
+    assert rules["battery"]["width_m"] == pytest.approx(0.79)
     assert isinstance(rules["rules"], list)
-    assert rules["rules"][0]["rule"] == "meter_distance"
+    assert rules["rules"][0]["rule"] == "harness_run"
 
 
 def test_planning_grid_must_nest_in_the_map_grid(tmp_path: Path) -> None:
@@ -124,11 +124,11 @@ def test_plan_factor(cfg: Config) -> None:
 def test_perception_class_entry_may_omit_optional_rules(tmp_path: Path) -> None:
     """A class entry states only the cls it needs; every other rule takes its default."""
     raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
-    raw["perception"]["classes"].append({"cls": "GAS_METER"})
+    raw["perception"]["classes"].append({"cls": "SHED"})  # not already listed
 
     cfg = load_config(_write(tmp_path, raw))
 
-    entry = next(c for c in cfg.perception.classes if c.cls == "GAS_METER")
+    entry = next(c for c in cfg.perception.classes if c.cls == "SHED")
     assert entry.report is True
     assert entry.hue_deg == (0.0, 360.0)
     assert entry.sat == (0.0, 1.0)
@@ -146,28 +146,30 @@ def test_perception_class_with_unknown_name_is_rejected(tmp_path: Path) -> None:
 
 def test_duplicate_perception_class_is_rejected(tmp_path: Path) -> None:
     raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
-    raw["perception"]["classes"].append(dict(raw["perception"]["classes"][1]))  # a second METER
+    meter = next(c for c in raw["perception"]["classes"] if c["cls"] == "METER")
+    raw["perception"]["classes"].append(dict(meter))  # a second METER
     with pytest.raises(ConfigError, match=re.escape("lists ['METER'] more than once")):
         load_config(_write(tmp_path, raw))
 
 
 def test_perception_near_cls_must_name_a_listed_class(tmp_path: Path) -> None:
     raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
-    raw["perception"]["classes"].append({"cls": "GAS_METER", "near_cls": "PANEL", "near_m": 0.5})
+    raw["perception"]["classes"].append({"cls": "SHED", "near_cls": "TREE", "near_m": 0.5})
     with pytest.raises(ConfigError, match="is not one of the listed classes"):
         load_config(_write(tmp_path, raw))
 
 
 def test_perception_near_cls_requires_near_m(tmp_path: Path) -> None:
     raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
-    raw["perception"]["classes"].append({"cls": "GAS_METER", "near_cls": "WALL"})
+    raw["perception"]["classes"].append({"cls": "SHED", "near_cls": "WALL"})
     with pytest.raises(ConfigError, match="near_cls and near_m must be given together"):
         load_config(_write(tmp_path, raw))
 
 
 def test_perception_class_sat_outside_unit_interval_is_rejected(tmp_path: Path) -> None:
     raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
-    raw["perception"]["classes"][1]["sat"] = [0.5, 1.5]  # METER
+    meter = next(c for c in raw["perception"]["classes"] if c["cls"] == "METER")
+    meter["sat"] = [0.5, 1.5]
     with pytest.raises(ConfigError, match=re.escape("sat must satisfy 0 <= lo <= hi <= 1")):
         load_config(_write(tmp_path, raw))
 
@@ -201,18 +203,31 @@ def test_sensor_zero_sun_dir_is_rejected(tmp_path: Path) -> None:
 
 
 def test_default_perception_classes_and_viewer_detection_colors(cfg: Config) -> None:
-    """The shipped config's WALL entry is context-only; METER, CONDUIT and BUSH are reported.
+    """The shipped config's WALL entry is context-only; every other listed class is reported.
 
-    Each reported class also has a viewer outline colour.
+    A class without an entry under ``viewer.detection_colors`` would fall back
+    to ``detection_default_rgb``, but the shipped config gives every reported
+    class its own, so the keep-outs battery siting measures are told apart.
     """
     by_name = {c.cls: c for c in cfg.perception.classes}
-    assert set(by_name) == {"WALL", "METER", "CONDUIT", "BUSH"}
+    assert set(by_name) == {
+        "WALL",
+        "DOOR",
+        "GARAGE_DOOR",
+        "WINDOW",
+        "METER",
+        "GAS_METER",
+        "CONDUIT",
+        "AC_UNIT",
+        "PANEL",
+        "BUSH",
+    }
     assert by_name["WALL"].report is False
-    for name in ("METER", "CONDUIT", "BUSH"):
+    for name in set(by_name) - {"WALL"}:
         assert by_name[name].report is True
 
     color_classes = {c.cls for c in cfg.viewer.detection_colors}
-    assert color_classes == {"METER", "CONDUIT", "BUSH"}
+    assert color_classes == set(by_name) - {"WALL"}
 
 
 @pytest.mark.parametrize(

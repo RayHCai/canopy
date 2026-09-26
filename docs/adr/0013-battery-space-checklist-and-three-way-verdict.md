@@ -86,7 +86,11 @@ definitions are inferred from the rest of the section.
   can express it.
 - A missed detection now passes a rule it should have failed, such as an
   undetected gas meter inside 3 ft. Detector recall is therefore part of the
-  siting's safety, not just its quality.
+  siting's safety, not just its quality. On seed 123 (an authored house) the
+  mission ends without detecting the front door or garage door, although
+  every window is found. So `harness_run` cannot block a route across them
+  there. Closing that needs better inspection coverage of the front, not
+  looser detector bands.
 - The OBJ battery asset is 0.93 m wide because it includes a side disconnect.
   The checklist's battery is 31 in (0.79 m) with no disconnect. Siting uses
   the checklist size; the rendered model is slightly wider than the box that

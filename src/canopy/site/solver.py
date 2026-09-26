@@ -7,30 +7,59 @@ the battery with ``placement.corner_margin_m`` to spare at both ends -- which
 is what "along the edge of the house" means, by construction -- and every
 rule in ``rules.yaml`` judges all of them in one vectorised call.
 
-Ranking is two-tiered. Sites that pass every required rule come first, by
-cost; flagged sites follow, fewest broken rules first, then by cost. The
-top ``placement.top_k`` are then picked greedily, skipping any site within
-``placement.min_separation_m`` of one already picked, so three suggestions
-are three different options rather than one spot nudged sideways.
+Each site gets its own verdict: REJECT if any ``on_fail: fail`` rule fails
+outright, MANUAL_REVIEW if any non-ignored rule fails only marginally (or is
+an ``on_fail: review`` rule), PASS otherwise.
+Sites are ranked by that verdict first, then by how many non-ignored rules
+they broke, then by cost. The top ``placement.top_k`` are picked greedily,
+skipping any site within ``placement.min_separation_m`` of one already
+picked, so three suggestions are three different options rather than one
+spot nudged sideways. The overall call (:func:`assess_site`) looks at every
+candidate ever scored, not just the ones offered: PASS if any of them
+passes, REJECT only if every one of them does, MANUAL_REVIEW otherwise -- a
+single marginal spot anywhere is enough to keep a REJECT off the table,
+because rejecting a customer outright is the expensive mistake to make.
 """
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from canopy.contracts import Cls, DiscoveredObject, MapState, SiteCandidate
+from canopy.contracts import (
+    Cls,
+    DiscoveredObject,
+    MapState,
+    Points,
+    SiteAssessment,
+    SiteCandidate,
+    SiteVerdict,
+)
 from canopy.errors import SiteError
 from canopy.site.outline import HouseOutline, trace_house
 from canopy.site.rules import (
     BatterySpec,
     Candidates,
+    FreeSpace,
+    HarnessRoute,
+    HarnessRun,
     PlacementSpec,
     RuleOutcome,
     SiteContext,
     SiteRules,
 )
 
-__all__ = ["find_meter", "suggest_sites", "wall_candidates"]
+__all__ = ["assess_site", "find_meter", "wall_candidates"]
+
+#: Metres per foot, for the justification's ft figures.
+_M_PER_FT = 0.3048
+
+#: Ranking order for a verdict: PASS sorts first, REJECT last.
+_VERDICT_RANK = {SiteVerdict.PASS: 0, SiteVerdict.MANUAL_REVIEW: 1, SiteVerdict.REJECT: 2}
+
+#: Most failing-rule reasons named in a REJECT justification.
+_TOP_REASONS = 2
 
 
 def find_meter(state: MapState) -> DiscoveredObject:
@@ -81,8 +110,8 @@ def wall_candidates(
     )
 
 
-def suggest_sites(state: MapState, rules: SiteRules) -> list[SiteCandidate]:
-    """Suggest up to ``placement.top_k`` battery sites from the finished map.
+def assess_site(state: MapState, rules: SiteRules) -> SiteAssessment:
+    """Judge the finished map against the checklist and offer the best sites.
 
     Parameters
     ----------
@@ -94,10 +123,10 @@ def suggest_sites(state: MapState, rules: SiteRules) -> list[SiteCandidate]:
 
     Returns
     -------
-    list of SiteCandidate
-        Best first. Sites that break a required rule carry a warning per rule
-        broken, and are offered only after every site that passes -- or, with
-        ``placement.fill_with_flagged`` off, only when none passes.
+    SiteAssessment
+        The overall verdict, the offered sites (best first, at most
+        ``placement.top_k``), a short justification, and how many candidates
+        were scored in total.
 
     Raises
     ------
@@ -119,17 +148,46 @@ def suggest_sites(state: MapState, rules: SiteRules) -> list[SiteCandidate]:
         meter=meter, house=house, objects=tuple(state.discovered.values()), state=state
     )
     outcomes = [rule.evaluate(candidates, context) for rule in rules.rules]
-    cost = np.zeros(len(candidates))
-    broken = np.zeros((len(rules.rules), len(candidates)), dtype=bool)
-    for k, (rule, outcome) in enumerate(zip(rules.rules, outcomes, strict=True)):
+
+    n = len(candidates)
+    cost = np.zeros(n)
+    reject = np.zeros(n, dtype=bool)
+    review = np.zeros(n, dtype=bool)
+    broken = np.zeros(n, dtype=np.int64)
+    fail_counts: dict[str, int] = {}
+    for rule, outcome in zip(rules.rules, outcomes, strict=True):
         cost += rule.weight * outcome.cost
-        broken[k] = rule.required & ~outcome.passed
-    n_broken = broken.sum(axis=0)
+        failing = ~outcome.passed
+        marginal = outcome.marginal if outcome.marginal is not None else np.zeros(n, dtype=bool)
+        marginal = marginal & failing
+        if rule.on_fail != "ignore":
+            broken += failing
+            fail_counts[rule.key] = int(failing.sum())
+        if rule.on_fail == "fail":
+            reject |= failing & ~marginal
+            review |= failing & marginal
+        elif rule.on_fail == "review":
+            review |= failing
+
+    # A plain list, not a NumPy object array: NumPy silently narrows a
+    # StrEnum (it is also a str) to a bare str the moment it touches an
+    # object-dtype array, which would leave every site's ``verdict`` failing
+    # `is SiteVerdict.PASS` even though `== SiteVerdict.PASS` still holds.
+    verdict = [
+        SiteVerdict.REJECT if r else SiteVerdict.MANUAL_REVIEW if v else SiteVerdict.PASS
+        for r, v in zip(reject.tolist(), review.tolist(), strict=True)
+    ]
+    rank = np.where(
+        reject,
+        _VERDICT_RANK[SiteVerdict.REJECT],
+        np.where(review, _VERDICT_RANK[SiteVerdict.MANUAL_REVIEW], _VERDICT_RANK[SiteVerdict.PASS]),
+    )
 
     placement = rules.placement
-    order = np.lexsort((cost, n_broken))
-    if not placement.fill_with_flagged and (n_broken == 0).any():
-        order = order[n_broken[order] == 0]
+    order = np.lexsort((cost, broken, rank))
+    if not placement.fill_with_flagged and (rank == 0).any():
+        order = order[rank[order] == 0]
+
     picked: list[int] = []
     for i in order:
         near = np.linalg.norm(candidates.anchor[picked] - candidates.anchor[i], axis=1)
@@ -138,7 +196,60 @@ def suggest_sites(state: MapState, rules: SiteRules) -> list[SiteCandidate]:
             if len(picked) == placement.top_k:
                 break
 
-    return [_site(i, candidates, rules, outcomes, cost, broken, meter) for i in picked]
+    harness = next((r for r in rules.rules if isinstance(r, HarnessRun)), None)
+    route = harness.route(candidates, context) if harness is not None else None
+
+    sites = [
+        _site(i, candidates, rules, outcomes, cost, verdict, meter, house, route) for i in picked
+    ]
+    overall = _overall_verdict(verdict)
+    justification = _justify(overall, sites, fail_counts, n, len(house.walls))
+    return SiteAssessment(
+        verdict=overall, sites=tuple(sites), justification=justification, n_candidates=n
+    )
+
+
+def _overall_verdict(verdict: list[SiteVerdict]) -> SiteVerdict:
+    """PASS if any candidate passes; REJECT only if every one does; else review.
+
+    A single marginal site anywhere blocks REJECT on purpose -- turning a
+    customer away outright is the expensive mistake in this product, worth
+    avoiding even at the cost of a wider MANUAL_REVIEW net.
+    """
+    if any(v is SiteVerdict.PASS for v in verdict):
+        return SiteVerdict.PASS
+    if all(v is SiteVerdict.REJECT for v in verdict):
+        return SiteVerdict.REJECT
+    return SiteVerdict.MANUAL_REVIEW
+
+
+def _conduit(
+    i: int,
+    candidates: Candidates,
+    house: HouseOutline,
+    battery_height_m: float,
+    meter: DiscoveredObject,
+    route: HarnessRoute | None,
+) -> Points:
+    """Build the harness's polyline from the meter to the top of the battery's back.
+
+    Follows :attr:`HarnessRoute.forward` -- the same direction the
+    ``harness_run`` rule scored -- through every corner the route passes, so
+    the drawn conduit is never a route the rule would have rejected. Falls
+    back to a straight line when ``rules.yaml`` has no ``harness_run`` entry
+    (a caller's own, e.g. a test rule list), matching the old behaviour.
+    """
+    anchor = candidates.anchor[i]
+    top = np.array([anchor[0], anchor[1], battery_height_m])
+    if route is None:
+        return np.array([meter.box.center, top])
+    if route.forward[i]:
+        plan = house.walk(route.s_meter, float(route.s_candidate[i]))
+    else:
+        plan = house.walk(float(route.s_candidate[i]), route.s_meter)[::-1]
+    z = np.full(len(plan), battery_height_m)
+    wall_path: Points = np.concatenate([plan, z[:, None]], axis=1)
+    return np.vstack([meter.box.center[None, :], wall_path])
 
 
 def _site(
@@ -147,11 +258,21 @@ def _site(
     rules: SiteRules,
     outcomes: list[RuleOutcome],
     cost: np.ndarray,
-    broken: np.ndarray,
+    verdict: list[SiteVerdict],
     meter: DiscoveredObject,
+    house: HouseOutline,
+    route: HarnessRoute | None,
 ) -> SiteCandidate:
     """Package candidate ``i`` as the contract type."""
     anchor = candidates.anchor[i]
+    warnings = tuple(
+        rule.explain(
+            float(outcome.measure[i]),
+            marginal=bool(outcome.marginal[i]) if outcome.marginal is not None else False,
+        )
+        for rule, outcome in zip(rules.rules, outcomes, strict=True)
+        if not outcome.passed[i]
+    )
     return SiteCandidate(
         pos=np.array([anchor[0], anchor[1], 0.0]),
         wall_normal=np.array([candidates.normal[i, 0], candidates.normal[i, 1], 0.0]),
@@ -160,12 +281,41 @@ def _site(
             rule.key: float(outcome.measure[i])
             for rule, outcome in zip(rules.rules, outcomes, strict=True)
         },
-        # From the meter to where the conduit enters the battery: the top of its back.
-        conduit=np.array([meter.box.center, [anchor[0], anchor[1], rules.battery.height_m]]),
+        conduit=_conduit(i, candidates, house, rules.battery.height_m, meter, route),
         bushes_to_remove=[],
-        warnings=tuple(
-            rule.explain(float(outcome.measure[i]))
-            for k, (rule, outcome) in enumerate(zip(rules.rules, outcomes, strict=True))
-            if broken[k, i]
-        ),
+        verdict=verdict[i],
+        warnings=warnings,
     )
+
+
+def _justify(
+    overall: SiteVerdict,
+    sites: list[SiteCandidate],
+    fail_counts: dict[str, int],
+    n_candidates: int,
+    n_walls: int,
+) -> str:
+    """One to three sentences a reviewer can act on without opening the map."""
+    if overall is SiteVerdict.PASS:
+        # The order sites are ranked in puts every PASS ahead of every
+        # MANUAL_REVIEW and REJECT, so the first offered site is a PASS
+        # whenever the overall call is.
+        best = sites[0]
+        parts = []
+        harness = best.breakdown.get(HarnessRun.name)
+        if harness is not None and math.isfinite(harness):
+            parts.append(f"a {harness / _M_PER_FT:.0f} ft harness run")
+        clearance = best.breakdown.get(FreeSpace.name)
+        if clearance is not None and math.isfinite(clearance):
+            parts.append(f"{clearance / _M_PER_FT:.1f} ft of front clearance")
+        detail = " and ".join(parts) if parts else "every rule satisfied"
+        return f"The best site clears every rule, with {detail}."
+    if overall is SiteVerdict.MANUAL_REVIEW:
+        best = sites[0]
+        if not best.warnings:
+            return "The best candidate needs a member's sign-off before approval."
+        return "The best candidate needs a member's sign-off: " + "; ".join(best.warnings[:2]) + "."
+    top = sorted(fail_counts.items(), key=lambda kv: -kv[1])[:_TOP_REASONS]
+    reasons = " and ".join(name.replace("_", " ") for name, _ in top)
+    tail = f", most often on {reasons}" if reasons else ""
+    return f"All {n_candidates} candidate spots along the {n_walls} traced walls fail{tail}."
