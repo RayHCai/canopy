@@ -1,0 +1,379 @@
+@import "tailwindcss";
+
+/*
+ * Color only ever means something.
+ *   ink / paper   facts and structure
+ *   signal        the reviewer's own decisions (selections, the send)
+ *   critical, warning, good   what the drones found; always paired with a glyph and a label
+ * Status steps were checked with the dataviz validator: CVD ΔE ≥ 8 between them,
+ * text contrast ≥ 4.5:1. Warning/good marks sit below 3:1 on paper by design, so
+ * they never appear without a text label.
+ */
+@theme {
+  --color-paper: #f2f0ea;
+  --color-paper-2: #e8e5dc;
+  --color-sheet: #ffffff;
+  --color-ink: #16150f;
+  --color-ink-2: #4b4940;
+  --color-ink-3: #6e6b62;
+  --color-rule: #d9d6cc;
+  --color-rule-strong: #b9b5a8;
+
+  --color-signal: #2b3ad8;
+  --color-signal-deep: #1e2bb0;
+  --color-signal-wash: #e3e6fb;
+
+  --color-critical: #c4381c;
+  --color-warning: #e09a1a;
+  --color-warning-ink: #94600a;
+  --color-good: #16957f;
+  --color-good-ink: #0e6b59;
+
+  --shadow-sheet:
+    0 1px 0 rgb(22 21 15 / 0.05), 0 28px 56px -28px rgb(22 21 15 / 0.35);
+
+  --ease-snap: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-swift: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@theme inline {
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  /* The member reads the email in their mail client's font, so the preview does too. */
+  --font-letter:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+html {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  color-scheme: light;
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+}
+
+body {
+  min-height: 100dvh;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-x: clip;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-signal);
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 3px;
+}
+
+@utility type-display {
+  font-weight: 700;
+  font-stretch: 108%;
+  letter-spacing: -0.038em;
+  line-height: 0.92;
+}
+
+@utility type-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* ---------- Motion ---------- */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(330%);
+  }
+}
+
+@keyframes stamp {
+  0% {
+    opacity: 0;
+    transform: scale(2.1) rotate(-22deg);
+  }
+  55% {
+    opacity: 0.92;
+    transform: scale(0.9) rotate(-6deg);
+  }
+  75% {
+    transform: scale(1.04) rotate(-9deg);
+  }
+  100% {
+    opacity: 0.92;
+    transform: scale(1) rotate(-8deg);
+  }
+}
+
+@keyframes thud {
+  0%,
+  100% {
+    transform: none;
+  }
+  35% {
+    transform: translateY(4px) scale(0.992);
+  }
+}
+
+.anim-rise {
+  animation: rise 820ms var(--ease-snap) both;
+  animation-delay: var(--delay, 0ms);
+}
+
+.anim-fade {
+  animation: fade-in 600ms var(--ease-snap) both;
+  animation-delay: var(--delay, 0ms);
+}
+
+/* ---------- Viewfinder: how a chosen photo is marked ---------- */
+
+/* Resting offset stays inside the 20px page gutter so phones never scroll sideways. */
+.vf-corner {
+  --o: -18px;
+  --w: 2px;
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  pointer-events: none;
+  border: 0 solid var(--color-ink-3);
+  opacity: 0;
+  transition:
+    top 560ms var(--ease-snap),
+    right 560ms var(--ease-snap),
+    bottom 560ms var(--ease-snap),
+    left 560ms var(--ease-snap),
+    opacity 300ms var(--ease-snap),
+    border-color 300ms var(--ease-snap);
+}
+.vf-corner[data-c="tl"] {
+  top: var(--o);
+  left: var(--o);
+  border-top-width: var(--w);
+  border-left-width: var(--w);
+}
+.vf-corner[data-c="tr"] {
+  top: var(--o);
+  right: var(--o);
+  border-top-width: var(--w);
+  border-right-width: var(--w);
+}
+.vf-corner[data-c="bl"] {
+  bottom: var(--o);
+  left: var(--o);
+  border-bottom-width: var(--w);
+  border-left-width: var(--w);
+}
+.vf-corner[data-c="br"] {
+  bottom: var(--o);
+  right: var(--o);
+  border-bottom-width: var(--w);
+  border-right-width: var(--w);
+}
+.vf-aim:not([data-locked]):hover .vf:not([data-active]) .vf-corner {
+  --o: -14px;
+  opacity: 0.6;
+}
+.vf-aim:has(:focus-visible) .vf .vf-corner {
+  --o: -12px;
+  opacity: 1;
+  border-color: var(--color-signal);
+}
+.vf[data-active] .vf-corner {
+  --o: -10px;
+  --w: 3px;
+  opacity: 1;
+  border-color: var(--color-signal);
+}
+
+/* ---------- Detections: what a drone flagged, drawn as camera brackets ---------- */
+
+@property --len {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 12px;
+}
+
+.detection {
+  --len: 12px;
+  --c: var(--color-ink-3);
+  background:
+    linear-gradient(var(--c) 0 0) top left / var(--len) 2px,
+    linear-gradient(var(--c) 0 0) top left / 2px var(--len),
+    linear-gradient(var(--c) 0 0) top right / var(--len) 2px,
+    linear-gradient(var(--c) 0 0) top right / 2px var(--len),
+    linear-gradient(var(--c) 0 0) bottom left / var(--len) 2px,
+    linear-gradient(var(--c) 0 0) bottom left / 2px var(--len),
+    linear-gradient(var(--c) 0 0) bottom right / var(--len) 2px,
+    linear-gradient(var(--c) 0 0) bottom right / 2px var(--len);
+  background-repeat: no-repeat;
+  outline: 1px solid color-mix(in srgb, var(--c) 35%, transparent);
+  outline-offset: -1px;
+  transition:
+    --len 360ms var(--ease-snap),
+    opacity 260ms var(--ease-snap),
+    background-color 260ms var(--ease-snap);
+}
+.detection[data-active] {
+  --len: 20px;
+  background-color: color-mix(in srgb, var(--c) 16%, transparent);
+}
+.detection[data-dim] {
+  opacity: 0.35;
+}
+
+/* Leader lines draw themselves in the first time their photo scrolls into view. */
+.leader {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+.leader-dot {
+  opacity: 0;
+}
+[data-inview] .leader {
+  animation: draw-line 1100ms var(--ease-snap) both;
+  animation-delay: calc(var(--i) * 160ms + 150ms);
+}
+[data-inview] .leader-dot {
+  animation: appear 300ms var(--ease-snap) both;
+  animation-delay: calc(var(--i) * 160ms + 100ms);
+}
+@keyframes draw-line {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---------- Masthead rule appears once the page scrolls ---------- */
+
+@supports (animation-timeline: scroll()) {
+  .masthead-rule {
+    animation: fade-in linear both;
+    animation-timeline: scroll(root);
+    animation-range: 0 96px;
+  }
+}
+
+/* ---------- Page transitions ---------- */
+
+::view-transition {
+  pointer-events: none;
+}
+
+::view-transition-group(masthead) {
+  animation: none;
+  z-index: 100;
+}
+::view-transition-old(masthead) {
+  display: none;
+}
+::view-transition-new(masthead) {
+  animation: none;
+}
+
+::view-transition-group(.morph) {
+  animation-duration: 560ms;
+  animation-timing-function: var(--ease-snap);
+}
+::view-transition-image-pair(.morph) {
+  animation-name: via-blur;
+}
+@keyframes via-blur {
+  30% {
+    filter: blur(2px);
+  }
+}
+
+::view-transition-old(.nav-forward) {
+  --slide: -56px;
+  animation:
+    180ms ease-in both vt-fade reverse,
+    460ms var(--ease-swift) both vt-slide reverse;
+}
+::view-transition-new(.nav-forward) {
+  --slide: 56px;
+  animation:
+    280ms ease-out 140ms both vt-fade,
+    460ms var(--ease-swift) both vt-slide;
+}
+::view-transition-old(.nav-back) {
+  --slide: 56px;
+  animation:
+    180ms ease-in both vt-fade reverse,
+    460ms var(--ease-swift) both vt-slide reverse;
+}
+::view-transition-new(.nav-back) {
+  --slide: -56px;
+  animation:
+    280ms ease-out 140ms both vt-fade,
+    460ms var(--ease-swift) both vt-slide;
+}
+
+@keyframes vt-fade {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+@keyframes vt-slide {
+  from {
+    translate: var(--slide);
+  }
+  to {
+    translate: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0s !important;
+    animation-delay: 0s !important;
+  }
+}
