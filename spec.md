@@ -8,22 +8,18 @@ Goals (in priority order)
 2. Swarm coordination that is robust: frontier exploration with live reassignment when a drone is killed.
 3. Meter detection, then a ranked battery site, conduit route, and bush removal list.
 4. An SSR packet (JSON + HTML with photos) generated at mission end.
-Non-goals. Real drone hardware, photogrammetry, flight-dynamics fidelity, production-grade detection accuracy, real Tesla SSR rules (a YAML placeholder stands in).
+Non-goals. Real drone hardware, photogrammetry, flight-dynamics fidelity, production-grade detection accuracy, the full photo-review SSR (meter class, meter number, panel layout). Battery placement does encode the real Battery Space checklist where the simulated world can express it (ADR 0013).
 Key architecture decisions (do not revisit without cause)
 • Classical planning is the critical path: frontier exploration, Hungarian assignment, grid path planning, and a safety shield. RL is optional and shielded.
-• Sensing is ray casting (Open3D RaycastingScene) against the scene meshes, not the physics engine's camera renderer. Each ray returns distance, object ID and triangle ID, so semantics are free.
-• Default motion model is kinematic. PyBullet physics is an optional flag.
+• Sensing is ray casting (Open3D RaycastingScene) against the scene meshes, not a rendered camera. Each ray returns distance, object ID and triangle ID, so semantics are free.
+• The motion model is kinematic only (see ADR 0006).
 • Battery placement is a constrained optimization over a 2D cost map, not a classifier. Only the meter uses a detector, and only as a stretch goal.
-• One scene manifest is the single source of truth for physics, sensing, and visualization.
+• One scene manifest is the single source of truth for sensing and visualization.
 • The product output is the SSR packet; the 3D map is the means.
 Tech stack and environment
 Python 3.10 in a conda-forge environment; the same environment.yml works on Windows, macOS (Apple Silicon) and Linux. Primary dev machine is Windows.
 Technology
 Used for
-gym-pybullet-drones
-Forked swarm sim: quadcopter dynamics, PID control, multi-drone, RL scaffold (physics mode only)
-PyBullet (conda-forge)
-Physics engine under gym-pybullet-drones; prebuilt, so no MSVC compile on Windows
 Open3D RaycastingScene
 360 depth sensor and photo camera; returns distance, object ID, triangle ID per ray
 trimesh + shapely + mapbox-earcut
@@ -51,7 +47,6 @@ name: canopy
 channels: [conda-forge]
 dependencies:
   - python=3.10
-  - pybullet
   - numpy
   - scipy
   - scikit-image
@@ -69,9 +64,6 @@ dependencies:
 Setup
 conda env create -f environment.yml
 conda activate canopy
-git clone https://github.com/utiasDSL/gym-pybullet-drones third_party/gym-pybullet-drones
-pip install -e third_party/gym-pybullet-drones
-• If the last step tries to compile pybullet, rerun with --no-deps and install missing imports by hand.
 • NumPy ABI error on import: pip install "numpy<2".
 • Windows spawns processes instead of forking: every entry point uses if __name__ == "__main__":, and each worker builds its own Open3D scene (not picklable).
 • Skip the repo's Betaflight / Crazyflie firmware SITL steps.
@@ -92,9 +84,9 @@ canopy/
       yard.py             # meter, bushes, trees, fence, driveway, distractors
       generate.py         # seed -> SceneManifest + OBJ files
     sim/
-      scene.py            # loads manifest into Open3D (and PyBullet if enabled)
+      scene.py            # loads manifest into Open3D
       sensors.py          # 360 ray sensor, pinhole photo camera
-      dynamics.py         # KinematicDynamics, PyBulletDynamics (same interface)
+      dynamics.py         # KinematicDynamics
       world.py            # SimWorld: step(), drones, kill_drone()
     mapping/
       occupancy.py        # voxel grid updates
@@ -126,7 +118,7 @@ canopy/
   out/                    # generated scenes, recordings, packets (gitignored)
 CLI entry points
 • python scripts/gen_scene.py --seed 42 --out out/scenes/42 writes manifest.json and meshes/*.obj.
-• python scripts/run_mission.py --seed 42 --drones 4 --dynamics kinematic --detector gt --viz live runs a full mission and writes out/runs/<seed>_<n>/ (packet, .rrd, metrics.json).
+• python scripts/run_mission.py --seed 42 --drones 4 --detector gt --viz live runs a full mission and writes out/runs/<seed>_<n>/ (packet, .rrd, metrics.json).
 • python scripts/batch_eval.py --seeds 0-29 --drones 1,2,4,6 --workers 4 runs headless and writes out/eval/summary.csv.
 • Common flags: --config config/default.yaml, --kill-drone <id>@<t_seconds>, --no-viz, --record <path.rrd>.
 Data contracts
@@ -278,13 +270,12 @@ FENCE
 Outputs. out/scenes/<seed>/manifest.json (numpy arrays as lists) + meshes/<obj_id>_<cls>.obj. Add a load_manifest(path) helper. Same seed must produce byte-identical files.
 Module 2: Sim + sensors
 SimWorld owns time, drone states, dynamics and sensors; it runs at a fixed 20 Hz control tick with sensing at 5 Hz, faster than real time when --no-viz.
-Scene loading. Load every OBJ into an Open3D o3d.t.geometry.RaycastingScene via add_triangles, in manifest order, so the returned geometry id equals obj_id. Build obj_tri_offset for global triangle ids. In physics mode, also load each OBJ into PyBullet as a static concave collision body.
+Scene loading. Load every OBJ into an Open3D o3d.t.geometry.RaycastingScene via add_triangles, in manifest order, so the returned geometry id equals obj_id. Build obj_tri_offset for global triangle ids.
 Dynamics interface
 class Dynamics(Protocol):
     def reset(self, states: list[DroneState]) -> None: ...
     def step(self, targets: dict[int, np.ndarray], dt: float) -> list[DroneState]: ...
-• KinematicDynamics (default): move toward the current waypoint target at v_max = 3.0 m/s with a_max = 4.0 m/s²; yaw turns toward velocity at 90 deg/s. No physics.
-• PyBulletDynamics (flag --dynamics pybullet): gym-pybullet-drones CtrlAviary + DSLPIDControl, DIRECT mode (no GUI), targets = waypoint positions. Must match the same interface.
+• KinematicDynamics: move toward the current waypoint target at v_max = 3.0 m/s with a_max = 4.0 m/s²; yaw turns toward velocity at 90 deg/s. No physics.
 360 sensor
 • Equirectangular ray grid: 180 azimuth x 60 elevation (elevation -75 to +30 degrees), 10,800 rays per scan.
 • Max range 12 m; misses set dist = inf, ids = -1.
@@ -375,7 +366,7 @@ Stretch A: synthetic training data
 • Train yolo detect train model=yolo11n.pt data=out/yolo/data.yaml imgsz=320 epochs=30 (use the latest nano model available).
 Stretch B: real photos. Fine-tune on a public electric meter set (for example Roboflow Universe detector-electric-meter, CC BY 4.0) and show one real house photo detection in the pitch. Not wired into the sim.
 Module 7: Site solver
-solve(map_state, rules) -> list[SiteCandidate] picks the top 3 battery sites by minimizing conduit length plus bush removal plus penalties on a 2D cost map built only from discovered objects.
+solve(map_state, rules) -> list[SiteCandidate] picks the top 3 battery sites by minimizing conduit length plus bush removal plus penalties on a 2D cost map built only from discovered objects. Superseded by ADRs 0012 and 0013: assess_site(map_state, rules) -> SiteAssessment judges candidates along traced walls with registered rules and returns a pass / manual_review / reject verdict.
 Inputs. Meter position and wall normal, house wall segments (from OCC voxels at z 0.5 to 2.5 m, fit with the footprint polygon approximation: use the convex outline of occupied wall voxels, or the manifest footprint in --oracle mode only), bush footprints, and positions of doors, windows, AC unit, gas meter, driveway.
 Cost map layers (0.1 m grid over lot)
 • house: inside footprint.
@@ -512,7 +503,7 @@ Blueprint layout, golden seeds, recorded .rrd + video
 Demo script runs end to end twice in a row
 Stretch
 after M6
-YOLO (A, B), physics mode, RL
+YOLO (A, B), RL
 Must not break M6 checks
 Agent rules
 • Work milestones in order; do not start stretch work until M6 passes.
@@ -558,7 +549,6 @@ sim:
   sensor_hz: 5
   replan_hz: 1
   timeout_s: 300
-  dynamics: kinematic
   v_max: 3.0
   a_max: 4.0
   battery_drain_per_10s: 0.01
@@ -601,6 +591,7 @@ safety:
   geofence_inset_m: 0.5
   stuck_window_s: 5
   stuck_min_progress_m: 0.5
+  hold_replan_s: 3.0
 Demo script (about 3 minutes)
 1. run_mission.py --seed <golden> --drones 4: gray house appears; drones take off and fan into orbit rings; the house paints in color.
 2. Orbit ends; drones break formation for frontiers behind bushes, garage and trees.

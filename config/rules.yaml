@@ -1,18 +1,62 @@
 # ---------------------------------------------------------------------------
-# Site placement constraints and scoring weights.
+# Battery siting rules (canopy.site), read once the swarm has mapped the house.
 #
 # PLACEHOLDER VALUES -- these stand in for the real SSR checklist, which is a
 # declared non-goal (spec.md "Non-goals"). Replace wholesale; do not tune.
+#
+# Units: metres. Every candidate site is a battery standing on the ground with
+# its back against a traced house wall, so "along the edge of the house" is
+# built in rather than a rule.
 # ---------------------------------------------------------------------------
-battery_w_m: 1.1
-battery_d_m: 0.3
-front_clearance_m: 0.9
-door_clearance_m: 0.9
-window_clearance_m: 0.3
-max_conduit_m: 12.0
 
-weights:
-  conduit_per_m: 1.0
-  bush_removal: 3.0
-  south_facing: 2.0
-  driveway_adjacent: -0.5
+battery:                  # bounding box of assets/obj_export/assets/base_core_battery.obj
+  width_m: 0.93           # along the wall, including its side-mounted disconnect
+  depth_m: 0.58           # out from the wall
+  height_m: 1.0
+
+placement:
+  step_m: 0.1             # candidate spacing along each wall
+  corner_margin_m: 0.1    # gap between the battery's side and the end of its wall
+  top_k: 3                # sites suggested
+  min_separation_m: 1.0   # between suggested sites, so they are distinct options
+  fill_with_flagged: true # top up with rule-breaking sites when fewer than top_k pass
+                          # (they are always offered, flagged, when none pass)
+
+outline:                  # tracing the walls from occupancy (canopy.site.outline)
+  band_z_m: [1.5, 2.8]    # a wall column fills this band; bushes, meters and fences don't
+  min_fill: 0.6           # fraction of the band that must be occupied
+  close_m: 0.75           # bridge gaps in the mapped walls up to ~2x this wide
+  simplify_m: 0.3         # wall polygon tolerance
+  max_meter_gap_m: 1.0    # the meter must be this close to a mapped wall
+
+# Each entry is one registered rule (canopy.site.rules; `rule:` is its name).
+# Every rule is both a constraint and a cost factor:
+#   required: true (default)  a site that fails is flagged, ranked after every
+#                             site that passes, and shown with a warning
+#   weight: 1.0 (default)     scales the rule's cost into the site's score;
+#                             lower scores rank first
+# To add a kind of rule, subclass canopy.site.Rule and decorate it with
+# canopy.site.register_rule; it can then be listed here by name.
+rules:
+  - rule: meter_distance  # battery's nearest edge to the meter, in plan; cost = distance
+    max_m: 1.83           # 6 ft
+  - rule: clear_of        # shortest gap to any discovered bush; cost = shortfall under prefer_m
+    cls: BUSH
+    min_m: 0.5
+    prefer_m: 1.0
+    weight: 2.0
+  - rule: clear_of        # never mount over the service conduit running from the meter
+    cls: CONDUIT
+    min_m: 0.05
+  - rule: free_space      # nothing mapped in the battery's footprint or working space
+    front_m: 0.9          # clearance kept free in front of it
+    except_cls: [BUSH]    # bushes are clear_of BUSH's job, which can name them
+    # Reads occupancy, so it catches what perception has no class for (AC unit,
+    # gas meter, shed). Anything within wall_gap_m (0.3) of the wall -- such as
+    # a breaker panel -- is indistinguishable from the wall at map resolution.
+  # More rules, off by default:
+  # - rule: facing        # keep off south walls and the afternoon sun
+  #   avoid_deg: 180      # compass bearing, degrees clockwise from north (+Y)
+  #   within_deg: 45
+  #   required: false     # a preference, not a constraint
+  #   weight: 0.5

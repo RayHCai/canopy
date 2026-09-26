@@ -14,26 +14,30 @@ from __future__ import annotations
 
 import os
 import types
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import MISSING, dataclass, fields, is_dataclass
 from pathlib import Path
 from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 import numpy as np
 import yaml
 
-from canopy.contracts import Vec3
+from canopy.contracts import Cls, Vec3
 from canopy.errors import ConfigError
 
 __all__ = [
     "Config",
     "DemoCfg",
+    "DetectionColorCfg",
     "MapCfg",
-    "PhysicsCfg",
+    "PerceptionCfg",
+    "PerceptionClassCfg",
     "PlannerCfg",
     "SafetyCfg",
     "SensorCfg",
     "SimCfg",
+    "ViewerCfg",
     "WorldgenCfg",
+    "build_section",
     "default_config_path",
     "default_rules_path",
     "load_config",
@@ -42,10 +46,14 @@ __all__ = [
 
 _T = TypeVar("_T")
 
-_VALID_DYNAMICS = ("kinematic", "pybullet")
-
 #: ``tuple[X, ...]`` has exactly two type arguments, the second being ``Ellipsis``.
 _VARIADIC_TUPLE_ARGS = 2
+
+#: Largest value of an 8-bit colour channel.
+_RGB_MAX = 255
+
+#: Degrees in a full turn of hue.
+_FULL_TURN_DEG = 360.0
 
 
 # ---------------------------------------------------------------------------
@@ -53,13 +61,12 @@ _VARIADIC_TUPLE_ARGS = 2
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
 class SimCfg:
-    """Timing and motion limits shared by every dynamics backend."""
+    """Timing and kinematic motion limits."""
 
     control_hz: int
     sensor_hz: int
     replan_hz: int
     timeout_s: float
-    dynamics: str
     v_max: float
     a_max: float
     battery_drain_per_10s: float
@@ -73,9 +80,6 @@ class SimCfg:
 
     def validate(self) -> None:
         """Raise :class:`ConfigError` if the section is internally inconsistent."""
-        if self.dynamics not in _VALID_DYNAMICS:
-            msg = f"sim.dynamics must be one of {_VALID_DYNAMICS}, got {self.dynamics!r}"
-            raise ConfigError(msg)
         for name in ("control_hz", "sensor_hz", "replan_hz"):
             if getattr(self, name) <= 0:
                 msg = f"sim.{name} must be positive"
@@ -92,36 +96,6 @@ class SimCfg:
 
 
 @dataclass(frozen=True, slots=True)
-class PhysicsCfg:
-    """gym-pybullet-drones backend settings. Read only in ``pybullet`` mode."""
-
-    drone_model: str
-    pyb_freq: int
-    ctrl_freq: int
-    gui: bool
-    setpoint_speed_ms: float
-
-    def validate(self, control_hz: int) -> None:
-        """Raise :class:`ConfigError` unless the three rates nest exactly."""
-        if self.pyb_freq % self.ctrl_freq:
-            msg = (
-                f"physics.pyb_freq ({self.pyb_freq}) must be an integer multiple of "
-                f"physics.ctrl_freq ({self.ctrl_freq})"
-            )
-            raise ConfigError(msg)
-        if self.ctrl_freq % control_hz:
-            msg = (
-                f"physics.ctrl_freq ({self.ctrl_freq}) must be an integer multiple of "
-                f"sim.control_hz ({control_hz}) so one control tick is a whole number "
-                f"of inner steps"
-            )
-            raise ConfigError(msg)
-        if self.setpoint_speed_ms <= 0:
-            msg = "physics.setpoint_speed_ms must be positive"
-            raise ConfigError(msg)
-
-
-@dataclass(frozen=True, slots=True)
 class SensorCfg:
     """360-degree ray sensor geometry and noise."""
 
@@ -131,11 +105,32 @@ class SensorCfg:
     el_max_deg: float
     max_range_m: float
     range_noise_m: float
+    sun_dir: tuple[float, float, float]
+    """Direction toward the sun, world frame. Normalised on use."""
+    ambient: float
+    """Brightness of a surface facing away from the sun, as a fraction of its colour."""
+    rgb_noise: float
+    """Standard deviation of Gaussian noise on each colour channel, in 8-bit levels."""
+    sky_rgb: tuple[int, int, int]
+    """Colour reported for a ray that hits nothing."""
 
     @property
     def n_rays(self) -> int:
         """Rays per scan."""
         return self.az_rays * self.el_rays
+
+    def validate(self) -> None:
+        """Raise :class:`ConfigError` if the colour model is unusable."""
+        if not np.any(np.asarray(self.sun_dir)):
+            msg = "sensor.sun_dir must not be the zero vector"
+            raise ConfigError(msg)
+        if not 0.0 <= self.ambient <= 1.0:
+            msg = f"sensor.ambient must be in [0, 1], got {self.ambient}"
+            raise ConfigError(msg)
+        if self.rgb_noise < 0.0:
+            msg = f"sensor.rgb_noise must be non-negative, got {self.rgb_noise}"
+            raise ConfigError(msg)
+        _check_rgb(self.sky_rgb, "sensor.sky_rgb")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +142,174 @@ class WorldgenCfg:
     p_meter_occluded: float
     trees: tuple[int, int]
     max_edge_m: float
+    launch_area_pads: int
+    """Swarm size the launch area is kept clear for: nothing is placed within
+    ``planner.launch_clear_radius_m`` of any of this many pads. A larger swarm's
+    outer pads fall outside that guarantee."""
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionClassCfg:
+    """One kind of object the detector looks for, described as colour and shape rules.
+
+    Teaching the detector a new class means adding one of these to
+    ``perception.classes`` in ``config/default.yaml``; no code changes. Every
+    rule except ``cls`` is optional, so an entry states only what tells its
+    class apart. Colour rules use hue, saturation and value because sunlight
+    and shadow scale a surface's brightness but leave its hue and saturation
+    alone.
+    """
+
+    cls: str
+    """Name of a :class:`~canopy.contracts.Cls` member, e.g. ``METER``."""
+    report: bool = True
+    """Whether matches become discovered objects. ``False`` makes the class
+    context only: evidence that other classes' ``near_cls`` rules measure to."""
+    hue_deg: tuple[float, float] = (0.0, 360.0)
+    """Hue range in degrees. ``lo > hi`` wraps through red, e.g. ``[340, 20]``."""
+    sat: tuple[float, float] = (0.0, 1.0)
+    """HSV saturation range."""
+    val: tuple[float, float] = (0.0, 1.0)
+    """HSV value (brightness) range."""
+    z_m: tuple[float, float] = (0.0, 12.0)
+    """Height band the class's evidence is collected from. An object cut off by
+    the top of the band continues above it, so it is not reported."""
+    cell_m: float = 0.05
+    """Edge of the cubes evidence is pooled into. Small cells keep thin objects
+    apart from their neighbours; large ones are cheaper for big objects."""
+    link_cells: int = 1
+    """Occupied cells up to this many apart (Chebyshev) join one object, which
+    bridges the gaps between sparse samples of a thin object."""
+    link_up_cells: int | None = None
+    """The same, vertically; ``link_cells`` when omitted. A thin upright
+    object, such as a conduit riser, is hit at a few sparse heights (a drone
+    at one altitude keeps sampling the same rows), so its vertical gaps are
+    wider than any horizontal gap to a neighbour it must stay apart from."""
+    neighbour_colour: bool = False
+    """Judge each cell's colour pooled with its 26 neighbours'. For pale classes:
+    a low-chroma cell rarely holds enough hits to judge alone, and pooling also
+    drops the cells between two nearly touching look-alikes (a conduit beside a
+    grey breaker panel). Saturated classes are judged well cell by cell."""
+    min_hits: int = 10
+    """Ray hits an object needs before it is reported."""
+    length_m: tuple[float, float] | None = None
+    """Range of the object's longest extent, horizontal or vertical."""
+    width_m: tuple[float, float] | None = None
+    """Range of its middle extent."""
+    thickness_m: tuple[float, float] | None = None
+    """Range of its shortest extent."""
+    height_m: tuple[float, float] | None = None
+    """Range of its vertical extent."""
+    bottom_m: tuple[float, float] | None = None
+    """Range of the height of its lowest point."""
+    min_elongation: float | None = None
+    """Minimum ratio of its longest extent to its middle one."""
+    near_cls: str | None = None
+    """A class this one must be found within ``near_m`` of, e.g. a meter on a WALL."""
+    near_m: float | None = None
+    """Distance limit for ``near_cls``, between the closest observed points."""
+
+    def validate(self, where: str, known: list[str]) -> None:
+        """Raise :class:`ConfigError` unless this entry is usable.
+
+        Parameters
+        ----------
+        where
+            Where the entry sits in the YAML, for the error message.
+        known
+            Every class listed alongside this one, which ``near_cls`` must name.
+        """
+        _check_cls(self.cls, where)
+        for name in ("sat", "val"):
+            lo, hi = getattr(self, name)
+            if not 0.0 <= lo <= hi <= 1.0:
+                msg = f"{where}.{name} must satisfy 0 <= lo <= hi <= 1, got {[lo, hi]}"
+                raise ConfigError(msg)
+        if not all(0.0 <= h <= _FULL_TURN_DEG for h in self.hue_deg):
+            msg = f"{where}.hue_deg must lie in [0, {_FULL_TURN_DEG:g}], got {list(self.hue_deg)}"
+            raise ConfigError(msg)
+        for name in ("z_m", "length_m", "width_m", "thickness_m", "height_m", "bottom_m"):
+            band = getattr(self, name)
+            if band is not None and band[0] > band[1]:
+                msg = f"{where}.{name} must be [lo, hi] with lo <= hi, got {list(band)}"
+                raise ConfigError(msg)
+        if self.cell_m <= 0.0 or self.link_cells < 1 or self.min_hits < 1:
+            msg = f"{where}: cell_m must be positive, link_cells and min_hits at least 1"
+            raise ConfigError(msg)
+        if self.link_up_cells is not None and self.link_up_cells < 1:
+            msg = f"{where}.link_up_cells must be at least 1, got {self.link_up_cells}"
+            raise ConfigError(msg)
+        if (self.near_cls is None) != (self.near_m is None):
+            msg = f"{where}: near_cls and near_m must be given together"
+            raise ConfigError(msg)
+        if self.near_cls is not None and self.near_cls not in known:
+            msg = f"{where}.near_cls {self.near_cls!r} is not one of the listed classes {known}"
+            raise ConfigError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class PerceptionCfg:
+    """The colour-and-geometry object detector (:mod:`canopy.perception`)."""
+
+    extract_hz: float
+    """How often evidence is re-clustered into objects."""
+    max_range_m: float
+    """Hits farther than this are too sparse to help, so they are skipped."""
+    colour_noise: float
+    """Standard deviation of one hit's colour, per channel, in 8-bit levels: the
+    detector's calibration of its sensor."""
+    colour_tolerance: float
+    """Standard errors of slack a hit or cell's colour gets before it is turned
+    away. An object's colour, pooled over all its hits, gets none."""
+    min_cell_hits: int
+    """Hits a cell needs before it counts, which drops one-off stray samples."""
+    box_margin_m: float
+    """Clearance added around an object's observed points, so its box outlines
+    the object rather than cutting through its outermost surface."""
+    ground_snap_m: float
+    """A box whose bottom is this close to the ground is extended down to it."""
+    split_saving: float
+    """An object is cut into parts, each boxed separately, when the parts' boxes
+    are at least this fraction smaller in total volume than one box around the
+    whole: an L-shaped conduit run is two straight pipes, while a bush or a
+    meter never shrinks that much."""
+    max_parts: int
+    """Most parts one connected object may be cut into."""
+    track_match_m: float
+    """An object keeps its track id if it is found again within this distance."""
+    confidence_hits: float
+    """Hits at which confidence reaches ``1 - 1/e``."""
+    classes: tuple[PerceptionClassCfg, ...]
+    """Every class the detector knows, context classes included."""
+
+    def validate(self) -> None:
+        """Raise :class:`ConfigError` unless every class entry is usable."""
+        if self.extract_hz <= 0.0 or self.max_range_m <= 0.0 or self.confidence_hits <= 0.0:
+            msg = "perception.extract_hz, max_range_m and confidence_hits must be positive"
+            raise ConfigError(msg)
+        if self.colour_noise < 0.0 or self.colour_tolerance < 0.0:
+            msg = "perception.colour_noise and colour_tolerance must be non-negative"
+            raise ConfigError(msg)
+        if self.min_cell_hits < 1 or self.max_parts < 1:
+            msg = "perception.min_cell_hits and max_parts must be at least 1"
+            raise ConfigError(msg)
+        if not 0.0 < self.split_saving < 1.0:
+            msg = f"perception.split_saving must be in (0, 1), got {self.split_saving}"
+            raise ConfigError(msg)
+        # A non-positive match distance would re-issue every track id on every
+        # extraction, and a negative margin can shrink a box past nothing.
+        if self.track_match_m <= 0.0 or self.box_margin_m < 0.0 or self.ground_snap_m < 0.0:
+            msg = (
+                "perception.track_match_m must be positive, and box_margin_m and "
+                "ground_snap_m non-negative"
+            )
+            raise ConfigError(msg)
+        names = [c.cls for c in self.classes]
+        if dupes := sorted({n for n in names if names.count(n) > 1}):
+            msg = f"perception.classes lists {dupes} more than once"
+            raise ConfigError(msg)
+        for i, entry in enumerate(self.classes):
+            entry.validate(f"perception.classes[{i}] ({entry.cls})", names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +322,31 @@ class MapCfg:
     min_hits: int
     coverage_max_range_m: float
     coverage_max_incidence_deg: float
+    ground_band_max_z_m: float
+    carve_ray_stride: int
+    carve_step_m: float
+    carve_stop_short_m: float
+
+    @property
+    def plan_factor(self) -> int:
+        """Map voxels per planning voxel along each axis."""
+        return round(self.plan_voxel_m / self.voxel_m)
+
+    def validate(self) -> None:
+        """Raise :class:`ConfigError` unless the planning grid nests in the map grid."""
+        if self.voxel_m <= 0:
+            msg = f"map.voxel_m must be positive, got {self.voxel_m}"
+            raise ConfigError(msg)
+        # The planner min-pools whole blocks of map voxels into one planning
+        # voxel; a fractional ratio would straddle block edges.
+        if self.plan_factor < 1 or not np.isclose(
+            self.plan_factor * self.voxel_m, self.plan_voxel_m
+        ):
+            msg = (
+                f"map.plan_voxel_m ({self.plan_voxel_m}) must be a positive integer "
+                f"multiple of map.voxel_m ({self.voxel_m})"
+            )
+            raise ConfigError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,12 +357,26 @@ class PlannerCfg:
     orbit_margin_m: float
     orbit_waypoints_per_ring: int
     frontier_min_voxels: int
+    frontier_min_z_m: float
+    ground_band_gain: float
+    viewpoint_range_m: tuple[float, float]
+    viewpoint_gain_radius_m: float
+    inspect_bucket_m: float
+    inspect_min_voxels: int
+    inspect_range_m: tuple[float, float]
+    inspect_max_angle_deg: float
     gain_lambda: float
     goal_conflict_radius_m: float
     goal_conflict_penalty: float
     hysteresis: float
     blacklist_s: float
-    done_ground_coverage: float
+    visited_radius_m: float
+    done_ground_coverage: float | None
+    takeoff_altitude_m: float
+    launch_clear_radius_m: float
+    waypoint_tolerance_m: float
+    landed_altitude_m: float
+    idle_return_s: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +390,7 @@ class SafetyCfg:
     geofence_inset_m: float
     stuck_window_s: float
     stuck_min_progress_m: float
+    hold_replan_s: float
 
     @property
     def inflation_m(self) -> float:
@@ -213,27 +416,95 @@ class DemoCfg:
 
 
 @dataclass(frozen=True, slots=True)
+class DetectionColorCfg:
+    """Outline colour the viewer draws one detected class in."""
+
+    cls: str
+    """Name of a :class:`~canopy.contracts.Cls` member."""
+    rgb: tuple[int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class ViewerCfg:
+    """Desktop viewer (``canopy-view``) settings."""
+
+    drones: int
+    max_drones: int
+    width_px: int
+    height_px: int
+    detection_colors: tuple[DetectionColorCfg, ...]
+    """Box outline colour per detected class."""
+    detection_default_rgb: tuple[int, int, int]
+    """Outline colour for a detected class with no entry in ``detection_colors``."""
+    site_rgb: tuple[int, int, int]
+    """Outline colour of a suggested battery site that meets every placement rule."""
+    site_warning_rgb: tuple[int, int, int]
+    """Outline colour of a suggested site that breaks a required rule."""
+
+    def validate(self) -> None:
+        """Raise :class:`ConfigError` unless the default swarm fits the limit."""
+        if self.max_drones < 1:
+            msg = f"viewer.max_drones must be at least 1, got {self.max_drones}"
+            raise ConfigError(msg)
+        if not 1 <= self.drones <= self.max_drones:
+            msg = f"viewer.drones must be in [1, {self.max_drones}], got {self.drones}"
+            raise ConfigError(msg)
+        names = [entry.cls for entry in self.detection_colors]
+        if dupes := sorted({n for n in names if names.count(n) > 1}):
+            msg = f"viewer.detection_colors lists {dupes} more than once"
+            raise ConfigError(msg)
+        for i, entry in enumerate(self.detection_colors):
+            where = f"viewer.detection_colors[{i}]"
+            _check_cls(entry.cls, where)
+            _check_rgb(entry.rgb, f"{where}.rgb")
+        _check_rgb(self.detection_default_rgb, "viewer.detection_default_rgb")
+        _check_rgb(self.site_rgb, "viewer.site_rgb")
+        _check_rgb(self.site_warning_rgb, "viewer.site_warning_rgb")
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """The whole of ``config/default.yaml``, validated."""
 
     sim: SimCfg
-    physics: PhysicsCfg
     sensor: SensorCfg
     worldgen: WorldgenCfg
+    perception: PerceptionCfg
     map: MapCfg
     planner: PlannerCfg
     safety: SafetyCfg
     demo: DemoCfg
+    viewer: ViewerCfg
 
     def validate(self) -> None:
         """Run every section's cross-field checks."""
         self.sim.validate()
-        self.physics.validate(self.sim.control_hz)
+        self.sensor.validate()
+        self.perception.validate()
+        self.map.validate()
+        self.viewer.validate()
+        # The planner treats every pad's column as surveyed clear, so the
+        # viewer must not offer a swarm wider than worldgen keeps clear.
+        if self.worldgen.launch_area_pads < self.viewer.max_drones:
+            msg = (
+                f"worldgen.launch_area_pads ({self.worldgen.launch_area_pads}) must be at "
+                f"least viewer.max_drones ({self.viewer.max_drones})"
+            )
+            raise ConfigError(msg)
 
-    @property
-    def physics_steps_per_tick(self) -> int:
-        """Inner PID steps per control tick in ``pybullet`` mode."""
-        return self.physics.ctrl_freq // self.sim.control_hz
+
+def _check_cls(name: str, where: str) -> None:
+    """Raise :class:`ConfigError` unless ``name`` names a :class:`Cls` member."""
+    if name not in Cls.__members__:
+        msg = f"{where}: {name!r} is not a class; expected one of {list(Cls.__members__)}"
+        raise ConfigError(msg)
+
+
+def _check_rgb(rgb: tuple[int, int, int], where: str) -> None:
+    """Raise :class:`ConfigError` unless every channel is an 8-bit level."""
+    if not all(0 <= c <= _RGB_MAX for c in rgb):
+        msg = f"{where} channels must be in [0, {_RGB_MAX}], got {list(rgb)}"
+        raise ConfigError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -356,19 +627,56 @@ def _coerce(annotation: Any, value: Any, where: str) -> Any:
 
 
 def _build(cls: type[_T], data: dict[str, Any], where: str) -> _T:
-    """Construct a config dataclass, rejecting unknown and missing keys."""
+    """Construct a config dataclass, rejecting unknown keys and missing required ones.
+
+    A field with a default may be left out, which is what lets a perception
+    class entry state only the rules it needs. Fields without one, which is
+    every field of every section, must be present.
+    """
     hints = get_type_hints(cls)
-    names = [f.name for f in fields(cls)]  # type: ignore[arg-type]
+    declared = fields(cls)  # type: ignore[arg-type]
+    names = [f.name for f in declared]
+    required = [f.name for f in declared if f.default is MISSING and f.default_factory is MISSING]
 
     if unknown := sorted(set(data) - set(names)):
         msg = f"{where or 'config'}: unknown key(s) {unknown}; known keys are {names}"
         raise ConfigError(msg)
-    if missing := sorted(set(names) - set(data)):
+    if missing := sorted(set(required) - set(data)):
         msg = f"{where or 'config'}: missing key(s) {missing}"
         raise ConfigError(msg)
 
-    kwargs = {n: _coerce(hints[n], data[n], f"{where}.{n}" if where else n) for n in names}
+    kwargs = {
+        n: _coerce(hints[n], data[n], f"{where}.{n}" if where else n) for n in names if n in data
+    }
     return cls(**kwargs)
+
+
+def build_section(cls: type[_T], data: Any, where: str) -> _T:
+    """Build any config dataclass from a YAML mapping, as strictly as ``load_config`` does.
+
+    Unknown keys, missing required keys and wrongly typed values all raise.
+    Public so a stage with its own YAML (the site stage's ``rules.yaml``) gets
+    the same guarantees without a second, drifting copy of the coercion.
+
+    Parameters
+    ----------
+    cls
+        A dataclass whose fields are bools, ints, floats, strings, tuples of
+        those, ``X | None``, or nested dataclasses of the same.
+    data
+        The parsed YAML node.
+    where
+        Location for error messages, e.g. ``"rules.yaml rules[2]"``.
+
+    Raises
+    ------
+    ConfigError
+        If ``data`` is not a mapping or does not fit ``cls``.
+    """
+    if not isinstance(data, dict):
+        msg = f"{where}: expected a mapping, got {type(data).__name__}"
+        raise ConfigError(msg)
+    return _build(cls, data, where)
 
 
 def load_config(path: Path | str | None = None) -> Config:
@@ -399,8 +707,9 @@ def load_config(path: Path | str | None = None) -> Config:
 def load_rules(path: Path | str | None = None) -> dict[str, Any]:
     """Load ``rules.yaml``.
 
-    Placement rules stay a plain mapping on purpose: they stand in for the real
-    SSR checklist and their shape is expected to change wholesale.
+    Placement rules stay a plain mapping here on purpose: they stand in for the
+    real SSR checklist and their shape is expected to change wholesale. The
+    site stage gives them their typed meaning (``canopy.site.load_site_rules``).
     """
     resolved = Path(path) if path is not None else default_rules_path()
     return _read_yaml(resolved)

@@ -12,27 +12,11 @@ sim:
   sensor_hz: 5              # 360-degree scan rate
   replan_hz: 1              # MissionController reassignment rate
   timeout_s: 300            # hard mission timeout, then jump to PHOTOS
-  dynamics: kinematic       # kinematic | pybullet
   v_max: 3.0
   a_max: 4.0
   battery_drain_per_10s: 0.01
   rth_battery: 0.15
   yaw_rate_deg_s: 90.0      # kinematic yaw slew toward velocity
-
-# PyBullet-backed dynamics. Only read when sim.dynamics == pybullet.
-# pyb_freq must be an integer multiple of ctrl_freq, and ctrl_freq an integer
-# multiple of sim.control_hz, so one control tick is a whole number of
-# inner steps. 240 / 60 = 4 and 60 / 20 = 3.
-physics:
-  drone_model: cf2x         # cf2x | cf2p | racer (gym-pybullet-drones assets)
-  pyb_freq: 240
-  ctrl_freq: 60
-  gui: false
-  # Reference-governor slew rate. DSLPIDControl is tuned for a 27 g Crazyflie
-  # making centimetre-scale moves, so the controller is fed a setpoint that
-  # creeps toward the waypoint at this speed rather than the waypoint itself.
-  # Much above ~1.0 destabilises the CF2X airframe.
-  setpoint_speed_ms: 0.6
 
 sensor:
   az_rays: 180
@@ -41,6 +25,12 @@ sensor:
   el_max_deg: 30
   max_range_m: 12.0
   range_noise_m: 0.01
+  # Colour channel: what each ray hits, in its true colour, lit by a fixed sun
+  # (brightness = ambient + (1 - ambient) * max(0, normal . sun)), plus noise.
+  sun_dir: [-0.45, -0.35, 0.82]   # toward the sun; normalised on use
+  ambient: 0.35
+  rgb_noise: 3.0                  # per channel, in 8-bit levels
+  sky_rgb: [184, 201, 218]        # reported on a miss
 
 worldgen:
   lot_m: [30, 40]
@@ -48,6 +38,153 @@ worldgen:
   p_meter_occluded: 0.5
   trees: [2, 5]
   max_edge_m: 0.2
+  launch_area_pads: 5         # launch columns kept clear for this many pads; >= viewer.max_drones
+
+# Object detection from range and colour alone (canopy.perception); ground-truth
+# object ids never reach it. Each `classes` entry is one kind of object: a
+# colour rule (HSV hue in degrees, saturation and value in [0, 1]), the height
+# band its evidence comes from, and shape rules its clusters must pass. Every
+# rule but `cls` is optional. To detect a new kind of object, add an entry here
+# (and a box colour under viewer.detection_colors). `report: false` makes a
+# class context only: never reported, but measurable by other classes' `near_cls`.
+perception:
+  extract_hz: 1.0             # evidence is re-clustered into objects this often
+  max_range_m: 10.0           # farther hits are too sparse to help
+  colour_noise: 3.0           # one hit's colour noise per channel, 8-bit levels (matches sensor.rgb_noise)
+  colour_tolerance: 2.5       # hits and cells are turned away only this many standard errors outside a rule
+  min_cell_hits: 1            # a cell with fewer hits is a stray sample
+  box_margin_m: 0.03          # boxes sit just outside the object, not on its surface
+  ground_snap_m: 0.25         # a box bottom this close to the ground extends to it
+  split_saving: 0.4           # cut an L-shaped object into parts when that shrinks its boxes this much
+  max_parts: 3
+  track_match_m: 1.0          # a re-found object within this keeps its track id
+  confidence_hits: 40         # hits at which confidence reaches 1 - 1/e
+  classes:
+    - cls: WALL               # context for the rules below: "on a wall", "near the house"
+      report: false
+      hue_deg: [35, 42]       # the shed's browner beige (30 deg, sat 0.33) is not the house
+      sat: [0.2, 0.29]
+      val: [0.2, 1.0]
+      z_m: [0.3, 3.0]
+      cell_m: 0.25
+    - cls: DOOR               # timber-brown front door, flush in a wall from the ground up
+      hue_deg: [20, 36]       # shares this hue with the shed's beige and the fence, and even
+      sat: [0.45, 0.72]       # with the gas meter's orange; their saturation (0.33-0.38 for
+      val: [0.13, 0.55]       # shed/fence, 0.85 for the gas meter) sits well outside this band
+      z_m: [0.0, 2.6]
+      cell_m: 0.1
+      min_hits: 20
+      length_m: [1.7, 2.4]    # taller than wide, so height sorts as the longest extent
+      width_m: [0.4, 1.4]     # its span along the wall
+      thickness_m: [0.0, 0.2]
+      near_cls: WALL
+      near_m: 0.35
+    - cls: GARAGE_DOOR        # authored and neighbour houses paint this the same colour as DOOR;
+      # the procedural off-white variant (232,230,224) is a second, disjoint colour population
+      # that no single HSV box can add without also matching WALL (225,205,170), which sits
+      # between the two in both hue and saturation. Only the DOOR-coloured variant is detected
+      # here; it is told apart from DOOR by size alone (see tests/perception/test_detector.py).
+      hue_deg: [20, 36]
+      sat: [0.45, 0.72]
+      val: [0.13, 0.55]
+      z_m: [0.0, 2.6]
+      cell_m: 0.1
+      min_hits: 20
+      length_m: [2.0, 6.0]    # wider than tall, so its span sorts as the longest extent
+      width_m: [1.6, 2.4]     # its height
+      thickness_m: [0.0, 0.3]
+      near_cls: WALL
+      near_m: 0.35
+    - cls: WINDOW             # distinct blue glazing; ground- and upper-floor windows are both
+      hue_deg: [195, 220]     # reported (no bottom_m), since the siting rule filters by height
+      sat: [0.3, 0.55]
+      val: [0.25, 1.0]
+      z_m: [0.5, 6.0]
+      cell_m: 0.1
+      min_hits: 20
+      length_m: [1.0, 1.35]   # the taller of (1.2 m height, 0.9-1.3 m width) sorts longest
+      width_m: [0.8, 1.3]     # the shorter of the two
+      thickness_m: [0.0, 0.15]
+    - cls: METER              # yellow box on a wall, around chest height
+      hue_deg: [44, 60]
+      sat: [0.7, 1.0]
+      val: [0.25, 1.0]        # a meter in full shadow still reads ~0.32; shadowed doors do not
+      z_m: [0.5, 3.0]
+      cell_m: 0.05
+      min_hits: 15
+      length_m: [0.2, 1.2]
+      width_m: [0.1, 0.8]
+      bottom_m: [0.5, 2.5]
+      near_cls: WALL
+      near_m: 0.35
+    - cls: GAS_METER          # second, orange-brown meter; saturation (0.85), not hue, is what
+      hue_deg: [26, 40]       # keeps it off the shed's/door's similar hue and off METER's yellow
+      sat: [0.65, 1.0]
+      val: [0.25, 1.0]
+      z_m: [0.0, 1.1]
+      cell_m: 0.05
+      min_hits: 15
+      length_m: [0.6, 0.95]
+      width_m: [0.35, 0.55]
+      thickness_m: [0.2, 0.35]
+      bottom_m: [0.0, 0.15]
+      near_cls: WALL
+      near_m: 0.35
+    - cls: CONDUIT            # thin blue-grey pipe run along a wall
+      hue_deg: [195, 245]
+      sat: [0.065, 0.14]
+      val: [0.2, 1.0]
+      z_m: [0.2, 3.0]         # starts above the grey foundation slab it would merge with
+      cell_m: 0.05
+      neighbour_colour: true  # pale: judge cells with their neighbours, which also parts it from the panel
+      link_up_cells: 4        # a riser is hit at sparse heights; bridge 20 cm gaps up it, not across
+      min_hits: 10
+      length_m: [0.15, 3.0]
+      width_m: [0.0, 0.6]     # an L-shaped run (riser plus nipple) is wider than one pipe
+      thickness_m: [0.0, 0.15]
+      min_elongation: 2.5
+      near_cls: WALL
+      near_m: 0.3
+    - cls: AC_UNIT            # grey condenser, standing on the ground, set back from the wall
+      hue_deg: [195, 225]
+      sat: [0.04, 0.065]      # between PANEL's (0.026) and CONDUIT's (0.081); a chunky
+      val: [0.2, 1.0]         # ground-standing box, not a thin wall panel or an elongated pipe,
+      z_m: [0.0, 1.3]         # is what actually keeps the three apart (see the shape rules below)
+      cell_m: 0.1
+      neighbour_colour: true
+      min_hits: 15
+      length_m: [0.85, 1.15]
+      width_m: [0.85, 1.15]
+      thickness_m: [0.7, 1.0]
+      bottom_m: [0.0, 0.1]
+      near_cls: WALL
+      near_m: 0.75            # worldgen sets it back 0.5 m from the wall; margin for box padding
+    - cls: PANEL              # breaker panel: thin, wall-mounted at chest height, near the meter
+      hue_deg: [225, 255]
+      sat: [0.0, 0.04]        # the palest of the grey cluster
+      val: [0.2, 1.0]
+      z_m: [0.4, 2.2]
+      cell_m: 0.05
+      neighbour_colour: true
+      min_hits: 12
+      length_m: [0.95, 1.35]
+      width_m: [0.35, 0.65]
+      thickness_m: [0.05, 0.3]
+      bottom_m: [0.55, 0.95]
+      near_cls: METER
+      near_m: 1.15            # worldgen offsets it 0.6-1.05 m from the meter
+    - cls: BUSH               # green shrub on the ground near the house
+      hue_deg: [110, 132]
+      sat: [0.45, 0.85]
+      val: [0.1, 1.0]
+      z_m: [0.08, 2.4]
+      cell_m: 0.1
+      min_hits: 40
+      length_m: [0.3, 3.0]
+      width_m: [0.2, 3.0]
+      height_m: [0.2, 2.0]
+      near_cls: WALL
+      near_m: 2.5
 
 map:
   voxel_m: 0.25
@@ -56,18 +193,39 @@ map:
   min_hits: 30
   coverage_max_range_m: 8.0
   coverage_max_incidence_deg: 70
+  ground_band_max_z_m: 2.5  # top of the "ground band" (walls, doors, meter, bushes)
+  carve_ray_stride: 2       # carve free space along every Nth ray; hits use all rays
+  carve_step_m: 0.2         # sample spacing along a ray when carving
+  carve_stop_short_m: 0.3   # stop carving this far before a hit, so noise can't free it
 
 planner:
   orbit_altitudes: [2.0, 4.5, 8.0]
   orbit_margin_m: 4.0
   orbit_waypoints_per_ring: 24
   frontier_min_voxels: 8
+  frontier_min_z_m: 1.0          # frontier voxels below this are ignored
+  ground_band_gain: 2.0          # gain multiplier for clusters centred below map.ground_band_max_z_m
+  viewpoint_range_m: [1.5, 3.0]  # viewpoint distance from its cluster centroid
+  viewpoint_gain_radius_m: 3.0   # unknown voxels counted around a candidate viewpoint
+  inspect_bucket_m: 3.0          # mapped-but-unseen surface is grouped into cubes this size
+  inspect_min_voxels: 4          # smaller buckets are not worth a trip
+  inspect_range_m: [2.0, 4.5]    # viewpoint distance from the surface (inside coverage range)
+  inspect_max_angle_deg: 55.0    # viewpoint must sit within this angle of the surface normal
   gain_lambda: 0.05
   goal_conflict_radius_m: 3.0
   goal_conflict_penalty: 5.0
   hysteresis: 0.2
   blacklist_s: 30
-  done_ground_coverage: 0.90
+  visited_radius_m: 2.0          # a frontier this close to a reached goal is spent
+  # Stop exploring once ground-band coverage reaches this; null = keep going until
+  # no reachable frontier or unseen surface is left, so the whole lot is mapped.
+  # spec.md says 0.90, which can leave the lawn and roof partly unmapped.
+  done_ground_coverage: null
+  takeoff_altitude_m: 2.0
+  launch_clear_radius_m: 1.0     # operator-surveyed clear column around each pad
+  waypoint_tolerance_m: 0.35
+  landed_altitude_m: 0.05        # below this, with no speed, a returning drone is down
+  idle_return_s: 3.0             # left without a target this long mid-mission -> fly home and land
 
 safety:
   drone_radius_m: 0.25
@@ -77,6 +235,7 @@ safety:
   geofence_inset_m: 0.5
   stuck_window_s: 5
   stuck_min_progress_m: 0.5
+  hold_replan_s: 3.0         # shield-held this long -> replan around other drones
 
 # Standalone single-drone flight demo (`canopy-fly`). Obstacle-free: this is
 # the M0/M1 stack check, not a mission.
@@ -87,3 +246,20 @@ demo:
   orbit_waypoints: 24
   laps: 2
   waypoint_tolerance_m: 0.35
+
+# Desktop viewer (`canopy-view`). The swarm runs the real mapping mission
+# (canopy.planning.run.MissionRun) over a generated property.
+viewer:
+  drones: 3                 # swarm size at launch
+  max_drones: 5             # upper bound of the settings slider
+  width_px: 1280            # restored (un-maximised) window size
+  height_px: 800
+  # Outline colour of each detected class's box (see perception.classes).
+  detection_colors:
+    - {cls: METER, rgb: [125, 190, 255]}     # light blue
+    - {cls: CONDUIT, rgb: [125, 190, 255]}   # light blue
+    - {cls: BUSH, rgb: [255, 125, 125]}      # light red
+  detection_default_rgb: [255, 255, 255]
+  # Outline of each suggested battery site (canopy.site, config/rules.yaml).
+  site_rgb: [255, 230, 120]          # light yellow: meets every placement rule
+  site_warning_rgb: [255, 160, 70]   # orange: breaks a rule, shown with its warnings
