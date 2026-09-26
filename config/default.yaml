@@ -28,6 +28,11 @@ physics:
   pyb_freq: 240
   ctrl_freq: 60
   gui: false
+  # Reference-governor slew rate. DSLPIDControl is tuned for a 27 g Crazyflie
+  # making centimetre-scale moves, so the controller is fed a setpoint that
+  # creeps toward the waypoint at this speed rather than the waypoint itself.
+  # Much above ~1.0 destabilises the CF2X airframe.
+  setpoint_speed_ms: 0.6
 
 sensor:
   az_rays: 180

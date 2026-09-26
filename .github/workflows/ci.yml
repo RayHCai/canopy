@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Fail rather than silently resolving something not in the lockfile.
+  UV_FROZEN: "1"
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the primary dev machine; Linux is where physics runs.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # The physics group is default-on; its markers make it a no-op on Windows,
+      # where PyBullet has no wheel.
+      - name: Sync
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: uv run pytest --cov --cov-report=xml
+
+      - name: Flight check
+        run: uv run canopy-fly --json --laps 1
+
+      - name: Physics flight check
+        if: runner.os == 'Linux'
+        run: uv run canopy-fly --dynamics pybullet --no-gui --json --laps 1 --radius 0.5

@@ -44,6 +44,9 @@ _T = TypeVar("_T")
 
 _VALID_DYNAMICS = ("kinematic", "pybullet")
 
+#: ``tuple[X, ...]`` has exactly two type arguments, the second being ``Ellipsis``.
+_VARIADIC_TUPLE_ARGS = 2
+
 
 # ---------------------------------------------------------------------------
 # Sections
@@ -96,6 +99,7 @@ class PhysicsCfg:
     pyb_freq: int
     ctrl_freq: int
     gui: bool
+    setpoint_speed_ms: float
 
     def validate(self, control_hz: int) -> None:
         """Raise :class:`ConfigError` unless the three rates nest exactly."""
@@ -111,6 +115,9 @@ class PhysicsCfg:
                 f"sim.control_hz ({control_hz}) so one control tick is a whole number "
                 f"of inner steps"
             )
+            raise ConfigError(msg)
+        if self.setpoint_speed_ms <= 0:
+            msg = "physics.setpoint_speed_ms must be positive"
             raise ConfigError(msg)
 
 
@@ -294,7 +301,7 @@ def _coerce_tuple(annotation: Any, value: Any, where: str) -> tuple[Any, ...]:
         msg = f"{where}: expected a sequence, got {type(value).__name__}"
         raise ConfigError(msg)
     args = list(get_args(annotation))
-    if len(args) == 2 and args[1] is Ellipsis:  # tuple[X, ...]
+    if len(args) == _VARIADIC_TUPLE_ARGS and args[1] is Ellipsis:  # tuple[X, ...]
         return tuple(_coerce(args[0], v, f"{where}[{i}]") for i, v in enumerate(value))
     if len(args) != len(value):
         msg = f"{where}: expected {len(args)} item(s), got {len(value)}"
@@ -338,7 +345,9 @@ def _coerce(annotation: Any, value: Any, where: str) -> Any:
         return _coerce_union(annotation, value, where)
     if origin is tuple:
         return _coerce_tuple(annotation, value, where)
-    if is_dataclass(annotation):
+    # `isinstance(annotation, type)` narrows to a dataclass *class*, not an
+    # instance of one, which is what _build needs.
+    if isinstance(annotation, type) and is_dataclass(annotation):
         if not isinstance(value, dict):
             msg = f"{where}: expected a mapping, got {type(value).__name__}"
             raise ConfigError(msg)

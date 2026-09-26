@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 __all__ = ["WaypointFollower", "demo_path", "orbit_ring", "path_length"]
 
+#: Fewer than this and a "ring" is not a closed loop worth flying.
+_MIN_ORBIT_WAYPOINTS = 3
+
 
 def orbit_ring(
     center: Vec3,
@@ -50,8 +53,8 @@ def orbit_ring(
     Points
         Shape ``(n_waypoints, 3)``.
     """
-    if n_waypoints < 3:
-        msg = f"an orbit needs at least 3 waypoints, got {n_waypoints}"
+    if n_waypoints < _MIN_ORBIT_WAYPOINTS:
+        msg = f"an orbit needs at least {_MIN_ORBIT_WAYPOINTS} waypoints, got {n_waypoints}"
         raise CanopyError(msg)
     if radius <= 0.0:
         msg = f"orbit radius must be positive, got {radius}"
@@ -84,9 +87,11 @@ def demo_path(cfg: DemoCfg) -> Points:
 
 
 def path_length(path: Points) -> float:
-    """Total polyline length of ``path`` in metres."""
-    if len(path) < 2:
-        return 0.0
+    """Total polyline length of ``path`` in metres.
+
+    A path of fewer than two points has no segments, and ``np.diff`` yields an
+    empty array for it, so no special case is needed.
+    """
     return float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum())
 
 
@@ -129,7 +134,7 @@ class WaypointFollower:
         return self._index >= len(self._path)
 
     def target(self) -> Vec3 | None:
-        """The current target, or ``None`` once the path is complete."""
+        """Return the current target, or ``None`` once the path is complete."""
         if self.done:
             return None
         result: Vec3 = self._path[self._index]

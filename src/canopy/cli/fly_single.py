@@ -109,7 +109,7 @@ def _estimate_timeout_s(path: Points, cfg: Config) -> float:
     return max(cruise * _TIMEOUT_SLACK, cfg.sim.timeout_s)
 
 
-def fly(cfg: Config) -> FlightSummary:
+def fly(cfg: Config, *, realtime: bool = False) -> FlightSummary:
     """Fly the demo path once and report what happened.
 
     Parameters
@@ -117,6 +117,10 @@ def fly(cfg: Config) -> FlightSummary:
     cfg
         Validated configuration. ``cfg.sim.dynamics`` selects the backend and
         the ``demo`` section defines the path.
+    realtime
+        Throttle the loop to wall-clock time. Without it the simulation runs
+        tens of times faster than real time, which is what you want for tests
+        and batch runs but means a GUI window only flashes past.
 
     Returns
     -------
@@ -157,6 +161,11 @@ def fly(cfg: Config) -> FlightSummary:
 
             distance += float(np.linalg.norm(state.pos - previous))
             max_speed = max(max_speed, float(np.linalg.norm(state.vel)))
+
+            if realtime:
+                behind = sim_t - (time.perf_counter() - wall_start)
+                if behind > 0:
+                    time.sleep(behind)
 
             if sim_t >= next_telemetry:
                 next_telemetry += _TELEMETRY_PERIOD_S
@@ -220,6 +229,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="open the PyBullet window (physics mode only)",
     )
     gui.add_argument("--no-gui", dest="gui", action="store_false", help="run headless")
+    realtime = parser.add_mutually_exclusive_group()
+    realtime.add_argument(
+        "--realtime",
+        dest="realtime",
+        action="store_true",
+        default=None,
+        help="throttle to wall-clock time so the flight is watchable (implied by --gui)",
+    )
+    realtime.add_argument(
+        "--no-realtime",
+        dest="realtime",
+        action="store_false",
+        help="run as fast as possible",
+    )
     parser.add_argument("--laps", type=int, default=None, help="orbit laps to fly")
     parser.add_argument("--radius", type=float, default=None, metavar="M", help="orbit radius")
     parser.add_argument("--altitude", type=float, default=None, metavar="M", help="orbit altitude")
@@ -257,7 +280,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         cfg = _apply_overrides(load_config(args.config), args)
-        summary = fly(cfg)
+        # A GUI you cannot watch is not a GUI, so --gui implies real time unless
+        # the caller explicitly opts out.
+        realtime = cfg.physics.gui if args.realtime is None else args.realtime
+        summary = fly(cfg, realtime=realtime)
     except CanopyError as exc:
         _log.error("%s", exc)
         return 2

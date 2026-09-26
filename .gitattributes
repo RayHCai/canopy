@@ -18,3 +18,4 @@ uv.lock  -diff linguist-generated=true
 
 # Shell scripts must stay LF even on Windows (WSL executes them).
 *.sh     text eol=lf
+Makefile text eol=lf

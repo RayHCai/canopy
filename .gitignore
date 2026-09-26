@@ -8,6 +8,7 @@ dist/
 
 # --- Environments (never commit; see README "OneDrive" note) ---
 .venv/
+.venv-wsl/
 venv/
 env/
 
