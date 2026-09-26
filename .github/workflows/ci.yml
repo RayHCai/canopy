@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows is the primary dev machine; Linux is where physics runs.
+        # Both the Windows dev machine and Linux are checked.
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
@@ -32,8 +32,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      # The physics group is default-on; its markers make it a no-op on Windows,
-      # where PyBullet has no wheel.
       - name: Sync
         run: uv sync
 
@@ -51,7 +49,3 @@ jobs:
 
       - name: Flight check
         run: uv run canopy-fly --json --laps 1
-
-      - name: Physics flight check
-        if: runner.os == 'Linux'
-        run: uv run canopy-fly --dynamics pybullet --no-gui --json --laps 1 --radius 0.5

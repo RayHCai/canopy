@@ -8,8 +8,8 @@ UV ?= uv
 RUN := $(UV) run
 
 .DEFAULT_GOAL := help
-.PHONY: help setup setup-lean lock lint format typecheck test test-cov test-all \
-        check fly fly-physics clean
+.PHONY: help setup lock lint format typecheck test test-cov test-all \
+        check fly view clean
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -17,9 +17,6 @@ help: ## Show this help
 
 setup: ## Create/refresh the environment from uv.lock
 	$(UV) sync
-
-setup-lean: ## Environment without the physics group (mirrors a Windows sync)
-	$(UV) sync --no-group physics
 
 lock: ## Re-resolve dependencies and update uv.lock
 	$(UV) lock
@@ -41,16 +38,16 @@ test: ## Run the fast tests
 test-cov: ## Run tests with a coverage report
 	$(RUN) pytest --cov --cov-report=term-missing --cov-report=xml
 
-test-all: ## Include the slow/physics tests
-	$(RUN) pytest -m "slow or physics or not slow"
+test-all: ## Include the slow tests
+	$(RUN) pytest -m "slow or not slow"
 
 check: lint typecheck test ## Everything CI runs
 
 fly: ## Single-drone flight check, kinematic
 	$(RUN) canopy-fly
 
-fly-physics: ## Single-drone flight check, PyBullet GUI (Linux/WSL only)
-	$(RUN) canopy-fly --dynamics pybullet --gui
+view: ## Open the Canopy desktop viewer
+	$(RUN) canopy-view
 
 clean: ## Remove caches and build artefacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache htmlcov coverage.xml .coverage

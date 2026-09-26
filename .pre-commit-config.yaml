@@ -1,7 +1,6 @@
 # Run `uv run pre-commit install` once. These hooks are the same checks CI runs,
 # so a clean commit means a green pipeline.
 default_install_hook_types: [pre-commit]
-exclude: '^third_party/'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks

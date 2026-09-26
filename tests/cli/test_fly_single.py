@@ -32,7 +32,6 @@ def test_json_output_is_machine_readable(capsys: pytest.CaptureFixture[str]) -> 
     assert main(["--quiet", "--json", "--laps", "1"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["completed"] is True
-    assert payload["dynamics"] == "kinematic"
 
 
 def test_cli_overrides_reach_the_flight(capsys: pytest.CaptureFixture[str]) -> None:
@@ -49,30 +48,14 @@ def test_bad_config_exits_two(tmp_path: Path, capsys: pytest.CaptureFixture[str]
     assert main(["--quiet", "--config", str(bad)]) == 2
 
 
-def test_gui_flags_are_mutually_exclusive() -> None:
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--gui", "--no-gui"])
-
-
-def test_gui_defaults_to_none_so_config_wins() -> None:
-    assert build_parser().parse_args([]).gui is None
-
-
 def test_summary_renders_every_field(cfg: Config) -> None:
     rendered = fly(cfg).render()
-    for label in ("dynamics", "waypoints", "completed", "realtime factor", "battery left"):
+    for label in ("waypoints", "completed", "realtime factor", "battery left"):
         assert label in rendered
 
 
-def test_realtime_flags_are_mutually_exclusive() -> None:
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--realtime", "--no-realtime"])
-
-
-def test_realtime_defaults_to_none_so_gui_decides() -> None:
-    assert build_parser().parse_args([]).realtime is None
+def test_realtime_is_off_by_default() -> None:
+    assert build_parser().parse_args([]).realtime is False
 
 
 def test_realtime_throttles_to_wall_clock(cfg: Config) -> None:

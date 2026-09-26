@@ -19,10 +19,8 @@
     "**/.mypy_cache": true
   },
   "search.exclude": {
-    "third_party/**": true,
     "out/**": true,
     ".venv/**": true,
-    ".venv-wsl/**": true,
     "uv.lock": true
   },
   "files.associations": { "*.j2": "jinja-html" }

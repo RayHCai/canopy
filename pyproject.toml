@@ -3,8 +3,8 @@
 #
 # Optional extras mirror the architecture's optional tracks (see spec.md
 # "Key architecture decisions"): the critical path is kinematic + ray casting,
-# so `physics`, `rl` and `detect` are strictly additive and never required to
-# run a mission.
+# so `rl` and `detect` are strictly additive and never required to run a
+# mission.
 # ---------------------------------------------------------------------------
 [project]
 name = "canopy"
@@ -15,9 +15,9 @@ license = { text = "MIT" }
 authors = [{ name = "Ray Flanagan" }]
 requires-python = ">=3.11,<3.12"
 
-# Pinned to 3.11 deliberately: it is the newest interpreter for which *every*
-# dependency ships a prebuilt wheel, PyBullet included. See
-# docs/adr/0002-python-311-and-uv.md.
+# Pinned to 3.11. The pin was forced by PyBullet's wheels, which are gone (see
+# docs/adr/0006-kinematic-only-dynamics.md); it stands until someone has a
+# reason to move. See docs/adr/0002-python-311-uv-and-pyenv.md.
 dependencies = [
   "numpy>=2.4,<3",
   "scipy>=1.17,<2",
@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 # The optional tracks are dependency groups (PEP 735), not extras. Canopy is an
-# application, not a library: nobody installs `canopy[physics]` from an index,
+# application, not a library: nobody installs `canopy[rl]` from an index,
 # and groups are what uv can enable by default.
 [dependency-groups]
 dev = [
@@ -45,32 +45,26 @@ dev = [
   "types-PyYAML>=6",
 ]
 
-# Physics-backed dynamics (`--dynamics pybullet`).
-#
-# PyBullet publishes manylinux wheels only: no Windows wheel has ever existed,
-# and no CPython wheel above 3.11. The markers below are load-bearing -- without
-# them a sync on Windows would try to compile Bullet's C++ with MSVC. Run the
-# physics track under WSL2 (see README and docs/adr/0003).
-physics = [
-  "pybullet>=3.2.7,<4; sys_platform != 'win32'",
-  "gym-pybullet-drones; sys_platform != 'win32'",
-]
-
 # Optional stretch tracks from the spec. Deliberately not default: torch alone is
 # ~2.5 GB installed.
 rl = ["stable-baselines3>=2.9,<3", "torch>=2.4"]
 detect = ["ultralytics>=8.3"]
 
+# Desktop viewer (`canopy-view`): a native window hosting a three.js scene.
+# pywebview drives Edge WebView2 on Windows, WebKit on macOS, and GTK or Qt on
+# Linux (the latter needs a system GUI toolkit). See docs/adr/0005.
+viewer = ["pywebview>=6.2,<7"]
+
 [tool.uv]
-# `physics` is a no-op on Windows because of its markers, so enabling it by
-# default is safe and means WSL/Linux need no special flag: a plain `uv run`
-# never strips PyBullet back out of the environment.
-default-groups = ["dev", "physics"]
+# `viewer` is small and pure Python, and `canopy-view` is the everyday way to
+# watch the swarm.
+default-groups = ["dev", "viewer"]
 
 [project.scripts]
 # Entry points live in the package, not in loose scripts, so they are
 # importable, testable and type-checked like everything else.
 canopy-fly = "canopy.cli.fly_single:main"
+canopy-view = "canopy.cli.view:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -80,20 +74,12 @@ build-backend = "hatchling.build"
 packages = ["src/canopy"]
 
 # ---------------------------------------------------------------------------
-# uv: resolver + workspace wiring
-# ---------------------------------------------------------------------------
-[tool.uv.sources]
-# Our vendored fork, tracked in-tree under third_party/ via git subtree.
-gym-pybullet-drones = { path = "third_party/gym-pybullet-drones", editable = true }
-
-# ---------------------------------------------------------------------------
 # Ruff: lint + format. One tool, no black/isort/flake8 sprawl.
 # ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
-extend-exclude = ["third_party"]
 
 [tool.ruff.lint]
 select = [
@@ -159,13 +145,20 @@ files = ["src/canopy", "tests"]
 strict = true
 warn_unreachable = true
 enable_error_code = ["redundant-expr", "possibly-undefined", "truthy-bool"]
-exclude = ["^third_party/"]
+
+# trimesh ships no type information, so every mesh-construction call it exposes
+# reads as "untyped" under strict mode; so do scikit-image's measure functions.
+# Silencing that per call site would mean a `type: ignore` on every primitive
+# worldgen builds; excluding the libraries keeps strictness where it belongs --
+# on our own signatures -- and matches the permissive third-party boundary
+# configured below.
+untyped_calls_exclude = ["trimesh", "skimage"]
 
 [[tool.mypy.overrides]]
 # None of these ship (usable) type information.
 module = [
   "open3d.*", "trimesh.*", "skimage.*", "shapely.*", "scipy.*",
-  "matplotlib.*", "pybullet.*", "gym_pybullet_drones.*", "rerun.*",
+  "matplotlib.*", "rerun.*", "webview.*",
 ]
 ignore_missing_imports = true
 
@@ -187,16 +180,10 @@ addopts = [
 ]
 markers = [
   "slow: takes more than a couple of seconds",
-  "physics: requires the `physics` extra (PyBullet); skipped where unavailable",
 ]
 filterwarnings = [
   "error",
   "default::DeprecationWarning",
-  # Upstream gym-pybullet-drones declares its gymnasium Box spaces in float64;
-  # gymnasium warns when it casts them down to float32. Not ours to fix, and it
-  # does not affect the control path. The message is prefixed with an ANSI colour
-  # escape, hence the leading `.*`.
-  'ignore:.*precision lowered by casting to float32:UserWarning',
 ]
 
 [tool.coverage.run]

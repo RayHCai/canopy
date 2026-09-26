@@ -11,7 +11,7 @@ import pytest
 from canopy.config import Config
 from canopy.contracts import DroneState
 from canopy.errors import SimulationError
-from canopy.sim.dynamics import Dynamics, KinematicDynamics, make_dynamics
+from canopy.sim.dynamics import KinematicDynamics
 
 
 def _state(pos: tuple[float, float, float] = (0.0, 0.0, 0.0)) -> DroneState:
@@ -29,14 +29,6 @@ def _run(
     """Step ``ticks`` times toward ``target``; ``None`` means "no task assigned"."""
     targets = {} if target is None else {0: target}
     return [dyn.step(targets, dt)[0] for _ in range(ticks)]
-
-
-def test_satisfies_the_protocol(cfg: Config) -> None:
-    assert isinstance(make_dynamics(cfg), Dynamics)
-
-
-def test_make_dynamics_selects_kinematic_by_default(cfg: Config) -> None:
-    assert isinstance(make_dynamics(cfg), KinematicDynamics)
 
 
 def test_reaches_its_target(cfg: Config) -> None:
@@ -182,7 +174,22 @@ def test_non_positive_dt_is_rejected(cfg: Config, dt: float) -> None:
         dyn.step({0: np.zeros(3)}, dt)
 
 
-def test_close_is_idempotent(cfg: Config) -> None:
+def test_braking_respects_a_max(cfg: Config) -> None:
+    """Regression: a drone with no target used to stop dead in a single tick.
+
+    The arrival clamp zeroed the velocity whenever there was no target, an
+    infinite deceleration that would let the safety shield's stopping-distance
+    model pass tests the real vehicle would fail.
+    """
+    dt = cfg.sim.dt
     dyn = KinematicDynamics(cfg.sim)
-    dyn.close()
-    dyn.close()
+    dyn.reset([_state()])
+    cruising = _run(dyn, np.array([100.0, 0.0, 0.0]), dt, ticks=40)[-1]
+    speed = float(np.linalg.norm(cruising.vel))
+    braking = _run(dyn, None, dt, ticks=200)
+
+    velocities = [cruising.vel, *[s.vel for s in braking]]
+    for before, after in itertools.pairwise(velocities):
+        assert float(np.linalg.norm(after - before)) / dt <= cfg.sim.a_max + 1e-6
+    travelled = float(braking[-1].pos[0] - cruising.pos[0])
+    assert travelled == pytest.approx(speed**2 / (2 * cfg.sim.a_max), rel=0.1)

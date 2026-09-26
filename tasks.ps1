@@ -10,7 +10,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'setup', 'lock', 'lint', 'format', 'typecheck',
-                 'test', 'test-cov', 'check', 'fly', 'clean')]
+                 'test', 'test-cov', 'check', 'fly', 'view', 'clean')]
     [string]$Task = 'help',
 
     # Extra arguments forwarded to the underlying command.
@@ -43,11 +43,9 @@ switch ($Task) {
             @{ n = 'test-cov';  d = 'Run tests with a coverage report' }
             @{ n = 'check';     d = 'Everything CI runs' }
             @{ n = 'fly';       d = 'Single-drone flight check, kinematic' }
+            @{ n = 'view';      d = 'Open the Canopy desktop viewer' }
             @{ n = 'clean';     d = 'Remove caches and build artefacts' }
         ) | ForEach-Object { Write-Host ('  {0,-12} {1}' -f $_.n, $_.d) }
-        Write-Host ''
-        Write-Host 'Physics mode needs PyBullet, which has no Windows wheel. Run it in WSL:' -ForegroundColor Yellow
-        Write-Host '  wsl -d Ubuntu -- ./scripts/bootstrap-wsl.sh'
     }
     'setup'     { Invoke-Step (@('uv', 'sync') + $Extra) }
     'lock'      { Invoke-Step (@('uv', 'lock') + $Extra) }
@@ -73,6 +71,7 @@ switch ($Task) {
         Write-Host 'All checks passed.' -ForegroundColor Green
     }
     'fly'       { Invoke-Step (@('uv', 'run', 'canopy-fly') + $Extra) }
+    'view'      { Invoke-Step (@('uv', 'run', 'canopy-view') + $Extra) }
     'clean' {
         foreach ($p in '.pytest_cache', '.ruff_cache', '.mypy_cache', 'htmlcov',
                        'coverage.xml', '.coverage') {

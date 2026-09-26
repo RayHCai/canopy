@@ -2,15 +2,21 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.egg
 .eggs/
 build/
 dist/
 
 # --- Environments (never commit; see README "OneDrive" note) ---
 .venv/
-.venv-wsl/
+.venv-*/
 venv/
 env/
+
+# --- Secrets / local overrides ---
+.env
+.env.*
+!.env.example
 
 # --- Tooling caches ---
 .pytest_cache/
@@ -20,19 +26,27 @@ env/
 .coverage.*
 coverage.xml
 htmlcov/
+.dmypy.json
+.hypothesis/
+.tox/
+.nox/
+.ipynb_checkpoints/
+*.prof
+*.log
 
 # --- Canopy run artefacts: generated scenes, recordings, packets ---
 out/
-
-# --- gym-pybullet-drones default log dir (if an upstream example is run in-tree) ---
-third_party/gym-pybullet-drones/results/
-third_party/gym-pybullet-drones/**/*.egg-info/
 
 # --- Editors / OS ---
 .idea/
 *.swp
 .DS_Store
 Thumbs.db
+desktop.ini
+*~
+
+# Claude Code: share project settings, ignore per-user overrides.
+.claude/settings.local.json
 
 # Keep the shared VS Code settings, ignore per-user state.
 .vscode/*

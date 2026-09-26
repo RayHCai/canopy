@@ -1,18 +1,14 @@
 """``canopy-fly``: fly one drone in an empty world.
 
 This is the M0/M1 stack check, not a mission. There is no scene, no sensing and
-no obstacles: one drone climbs to altitude and orbits the launch pad, under
-either dynamics backend. If this runs, the local stack is good.
+no obstacles: one drone climbs to altitude and orbits the launch pad. If this
+runs, the local stack is good. To watch a flight, use ``canopy-view``.
 
 Examples
 --------
-Kinematic (works everywhere, no PyBullet needed)::
+::
 
     canopy-fly --laps 2
-
-Physics, with the PyBullet window (Linux or WSL2)::
-
-    canopy-fly --dynamics pybullet --gui
 """
 
 from __future__ import annotations
@@ -33,8 +29,8 @@ from canopy import log
 from canopy.config import Config, load_config
 from canopy.contracts import DroneState
 from canopy.errors import CanopyError
-from canopy.planning.waypoints import WaypointFollower, demo_path, path_length
-from canopy.sim.dynamics import make_dynamics
+from canopy.planning import WaypointFollower, demo_path, path_length
+from canopy.sim import KinematicDynamics
 
 if TYPE_CHECKING:
     from canopy.contracts import Points
@@ -54,7 +50,6 @@ _TIMEOUT_SLACK = 3.0
 class FlightSummary:
     """What the flight actually did, for humans and for tests."""
 
-    dynamics: str
     waypoints_total: int
     waypoints_reached: int
     completed: bool
@@ -73,7 +68,6 @@ class FlightSummary:
     def render(self) -> str:
         """Format as an aligned human-readable block."""
         rows = [
-            ("dynamics", self.dynamics),
             ("waypoints", f"{self.waypoints_reached}/{self.waypoints_total}"),
             ("completed", "yes" if self.completed else "NO (timed out)"),
             ("sim time", f"{self.sim_time_s:.2f} s"),
@@ -115,12 +109,11 @@ def fly(cfg: Config, *, realtime: bool = False) -> FlightSummary:
     Parameters
     ----------
     cfg
-        Validated configuration. ``cfg.sim.dynamics`` selects the backend and
-        the ``demo`` section defines the path.
+        Validated configuration. The ``demo`` section defines the path.
     realtime
         Throttle the loop to wall-clock time. Without it the simulation runs
         tens of times faster than real time, which is what you want for tests
-        and batch runs but means a GUI window only flashes past.
+        and batch runs.
 
     Returns
     -------
@@ -129,15 +122,14 @@ def fly(cfg: Config, *, realtime: bool = False) -> FlightSummary:
     """
     path = demo_path(cfg.demo)
     follower = WaypointFollower(path, cfg.demo.waypoint_tolerance_m)
-    dynamics = make_dynamics(cfg)
+    dynamics = KinematicDynamics(cfg.sim)
 
     dt = cfg.sim.dt
     timeout_s = _estimate_timeout_s(path, cfg)
     _log.info(
-        "flying %d waypoint(s), %.1f m, dynamics=%s, dt=%.3f s, timeout=%.0f s",
+        "flying %d waypoint(s), %.1f m, dt=%.3f s, timeout=%.0f s",
         follower.n_waypoints,
         path_length(path),
-        cfg.sim.dynamics,
         dt,
         timeout_s,
     )
@@ -150,44 +142,40 @@ def fly(cfg: Config, *, realtime: bool = False) -> FlightSummary:
     max_speed = 0.0
     next_telemetry = 0.0
     wall_start = time.perf_counter()
-    try:
-        while not follower.done and sim_t < timeout_s:
-            target = follower.update(state.pos)
-            if target is None:
-                break
-            previous = state.pos.copy()
-            state = dynamics.step({0: target}, dt)[0]
-            sim_t += dt
+    while not follower.done and sim_t < timeout_s:
+        target = follower.update(state.pos)
+        if target is None:
+            break
+        previous = state.pos.copy()
+        state = dynamics.step({0: target}, dt)[0]
+        sim_t += dt
 
-            distance += float(np.linalg.norm(state.pos - previous))
-            max_speed = max(max_speed, float(np.linalg.norm(state.vel)))
+        distance += float(np.linalg.norm(state.pos - previous))
+        max_speed = max(max_speed, float(np.linalg.norm(state.vel)))
 
-            if realtime:
-                behind = sim_t - (time.perf_counter() - wall_start)
-                if behind > 0:
-                    time.sleep(behind)
+        if realtime:
+            behind = sim_t - (time.perf_counter() - wall_start)
+            if behind > 0:
+                time.sleep(behind)
 
-            if sim_t >= next_telemetry:
-                next_telemetry += _TELEMETRY_PERIOD_S
-                _log.info(
-                    "t=%6.2fs  wp %3d/%-3d  pos=(%6.2f,%6.2f,%5.2f)  |v|=%4.2f m/s  "
-                    "yaw=%6.1f deg  batt=%5.1f%%",
-                    sim_t,
-                    follower.reached_count,
-                    follower.n_waypoints,
-                    *state.pos,
-                    float(np.linalg.norm(state.vel)),
-                    math.degrees(state.yaw),
-                    state.battery * 100.0,
-                )
-        # One last check so a drone that arrives on the final tick counts as done.
-        follower.update(state.pos)
-    finally:
-        dynamics.close()
+        if sim_t >= next_telemetry:
+            next_telemetry += _TELEMETRY_PERIOD_S
+            _log.info(
+                "t=%6.2fs  wp %3d/%-3d  pos=(%6.2f,%6.2f,%5.2f)  |v|=%4.2f m/s  "
+                "yaw=%6.1f deg  batt=%5.1f%%",
+                sim_t,
+                follower.reached_count,
+                follower.n_waypoints,
+                *state.pos,
+                float(np.linalg.norm(state.vel)),
+                math.degrees(state.yaw),
+                state.battery * 100.0,
+            )
+    # One last check so a drone that arrives on the final tick counts as done.
+    follower.update(state.pos)
 
     wall_elapsed = time.perf_counter() - wall_start
     return FlightSummary(
-        dynamics=cfg.sim.dynamics,
         waypoints_total=follower.n_waypoints,
         waypoints_reached=follower.reached_count,
         completed=follower.done,
@@ -215,33 +203,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="config YAML (default: the shipped config/default.yaml)",
     )
     parser.add_argument(
-        "--dynamics",
-        choices=("kinematic", "pybullet"),
-        default=None,
-        help="motion model (default: from config)",
-    )
-    gui = parser.add_mutually_exclusive_group()
-    gui.add_argument(
-        "--gui",
-        dest="gui",
-        action="store_true",
-        default=None,
-        help="open the PyBullet window (physics mode only)",
-    )
-    gui.add_argument("--no-gui", dest="gui", action="store_false", help="run headless")
-    realtime = parser.add_mutually_exclusive_group()
-    realtime.add_argument(
         "--realtime",
-        dest="realtime",
         action="store_true",
-        default=None,
-        help="throttle to wall-clock time so the flight is watchable (implied by --gui)",
-    )
-    realtime.add_argument(
-        "--no-realtime",
-        dest="realtime",
-        action="store_false",
-        help="run as fast as possible",
+        help="throttle to wall-clock time rather than running as fast as possible",
     )
     parser.add_argument("--laps", type=int, default=None, help="orbit laps to fly")
     parser.add_argument("--radius", type=float, default=None, metavar="M", help="orbit radius")
@@ -254,13 +218,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     """Fold CLI flags into the loaded config, then re-validate."""
-    sim = cfg.sim
-    physics = cfg.physics
     demo = cfg.demo
-    if args.dynamics is not None:
-        sim = dataclasses.replace(sim, dynamics=args.dynamics)
-    if args.gui is not None:
-        physics = dataclasses.replace(physics, gui=args.gui)
     if args.laps is not None:
         demo = dataclasses.replace(demo, laps=args.laps)
     if args.radius is not None:
@@ -268,7 +226,7 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     if args.altitude is not None:
         demo = dataclasses.replace(demo, takeoff_altitude_m=args.altitude)
 
-    updated = dataclasses.replace(cfg, sim=sim, physics=physics, demo=demo)
+    updated = dataclasses.replace(cfg, demo=demo)
     updated.validate()
     return updated
 
@@ -280,10 +238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         cfg = _apply_overrides(load_config(args.config), args)
-        # A GUI you cannot watch is not a GUI, so --gui implies real time unless
-        # the caller explicitly opts out.
-        realtime = cfg.physics.gui if args.realtime is None else args.realtime
-        summary = fly(cfg, realtime=realtime)
+        summary = fly(cfg, realtime=args.realtime)
     except CanopyError as exc:
         _log.error("%s", exc)
         return 2
