@@ -18,7 +18,7 @@ import pytest
 from canopy.config import Config
 from canopy.contracts import Cls, MaterialRun, SceneGeometry, SceneManifest, SceneObject
 from canopy.errors import WorldgenError
-from canopy.viz.viewer import ViewerSession, _world_payload
+from canopy.viz.session import ViewerSession, _world_payload
 from canopy.worldgen.generate import generate_field
 
 

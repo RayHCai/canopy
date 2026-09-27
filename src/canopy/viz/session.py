@@ -1,19 +1,12 @@
-"""The desktop viewer: a headless mapping mission and the window that renders it.
+"""The viewer's headless half: a real mapping mission, advanced on demand.
 
-``canopy-view`` opens a native window (pywebview) whose page draws a real
-mapping mission -- the same :class:`~canopy.planning.run.MissionRun` loop
-``canopy-fly`` and the batch evaluator drive -- with three.js. The work is
-split so that only one function knows a window exists:
-
-:class:`ViewerSession`
-    Pure Python. Owns the generated property, the mission run and simulated
-    time. The page drives it, but so can a test, with no display attached.
-:func:`launch`
-    The single place pywebview is imported, lazily, so a machine without the
-    ``viewer`` dependency group still imports :mod:`canopy` cleanly.
-
-Why a web renderer in a desktop window, rather than the PyBullet GUI or Rerun,
-is recorded in ``docs/adr/0005-desktop-viewer.md``.
+``canopy-view`` draws a real mapping mission -- the same
+:class:`~canopy.planning.MissionRun` loop ``canopy-fly`` and the batch
+evaluator drive. :class:`ViewerSession` is pure Python: it owns the generated
+property, the mission run and simulated time. The page drives it through
+:mod:`canopy.viz.bridge`, but so can a test, with no display attached. The
+address-build workflow it exposes lives in :mod:`canopy.viz.site_jobs`, and the
+per-tick snapshots and run log in :mod:`canopy.viz.recording`.
 
 Time is driven by the page. Each animation frame it reports how much wall-clock
 time has passed; the session moves a playback clock on by that much and returns
@@ -43,12 +36,6 @@ binary but many times that as a JSON list of floats. Newly seen triangles are
 reported the same way, as the ids the mapper has just revealed, so the page can
 paint them in true colour without re-fetching the whole mesh.
 
-The drones are drawn from the authored ``canopy_scout`` model in the asset
-library, read here with the same OBJ reader worldgen uses and handed to the page
-as plain arrays. The page ships only three.js core, not its loaders, and cannot
-see ``assets/`` from the web directory pywebview serves -- and keeping the file
-format on the Python side means one OBJ reader, not two.
-
 Every frame also lists the objects perception has classified so far, each as
 an upright box the page outlines in its class's colour
 (``viewer.detection_colors``). They come from the mapper's
@@ -63,8 +50,15 @@ later frame carries the result: an overall verdict, a short justification, and
 the offered sites, each with its own verdict. They are computed on the
 simulation thread at the tick exploration ends and ride along in that tick's
 snapshot, so they appear on screen when the end of mapping does, not seconds
-before it. The page draws each site with the ``base_core_battery`` model,
-served like the drone.
+before it. The page draws each site with the ``base_core_battery`` model
+(:mod:`canopy.viz.models`), served like the drone.
+
+Each generated property is written under ``scene_dir/<seed>`` (``out/viewer``
+by default). Every re-roll and address build writes a new one, so the
+directory is trimmed to the ``viewer.scene_cache_max`` most recently used
+seeds whenever a scene is built; the loaded scene's own directory is never
+removed, and address snapshots (``out/sites``) live elsewhere and are never
+touched.
 """
 
 from __future__ import annotations
@@ -73,11 +67,13 @@ import base64
 import functools
 import math
 import secrets
+import shutil
 import threading
 from collections import deque
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -86,41 +82,25 @@ from canopy import mathutil
 from canopy.contracts import (
     DiscoveredObject,
     DroneState,
-    Points,
     SceneGeometry,
     SceneManifest,
     SiteCandidate,
+    SiteSnapshot,
     SiteVerdict,
-    Vec3,
 )
-from canopy.errors import (
-    ConfigError,
-    DependencyMissingError,
-    SimulationError,
-    SiteError,
-    WorldgenError,
-)
+from canopy.errors import ConfigError, SimulationError, SiteError, WorldgenError
 from canopy.log import get_logger
-from canopy.planning import MissionRun
+from canopy.planning import MappingEta, MissionRun
 from canopy.sim import RaySensor, load_geometry
 from canopy.site import SiteRules, assess_site, load_site_rules
-from canopy.worldgen import default_assets_dir, generate_field, read_mtl, read_obj
+from canopy.viz.recording import T_EPS, RunRecorder, Snapshot, take_snapshot
+from canopy.viz.site_jobs import JobGate, SiteJobs, location_doc
+from canopy.worldgen import generate_field
 
 if TYPE_CHECKING:
     from canopy.config import Config
 
-__all__ = [
-    "BATTERY_MODEL",
-    "DRONE_MODEL",
-    "MAX_TIME_SCALE",
-    "MIN_DRONES",
-    "MIN_TIME_SCALE",
-    "WEB_DIR",
-    "ViewerSession",
-    "battery_model",
-    "drone_model",
-    "launch",
-]
+__all__ = ["MAX_TIME_SCALE", "MIN_DRONES", "MIN_TIME_SCALE", "ViewerSession"]
 
 _log = get_logger(__name__)
 
@@ -133,16 +113,6 @@ MIN_DRONES = 1
 #: capped by the playback throttle and look like the slider does nothing.
 MIN_TIME_SCALE = 0.5
 MAX_TIME_SCALE = 2.0
-
-#: The page, its script and its vendored three.js.
-WEB_DIR = Path(__file__).resolve().parent / "web"
-
-#: The drone model, relative to the asset root (the directory holding
-#: ``models/`` and ``obj_export/``). Its MTL sits beside it with the same stem.
-DRONE_MODEL = Path("obj_export/assets/canopy_scout.obj")
-
-#: The battery model drawn at each suggested site, relative to the asset root.
-BATTERY_MODEL = Path("obj_export/assets/base_core_battery.obj")
 
 #: Mission phases during which the map is still being built. Site suggestions
 #: wait until the mission has left them.
@@ -164,9 +134,6 @@ _FULL_SPEED_FRACTION = 0.5
 #: How long the simulation thread sleeps when the buffer is full.
 _IDLE_WAIT_S = 0.005
 
-#: Snapshot times are sums of ``dt``; this absorbs their rounding.
-_T_EPS = 1e-9
-
 #: Seeds are drawn from this many bits, so they stay readable in the UI.
 _SEED_BITS = 31
 
@@ -179,49 +146,78 @@ def _b64(array: npt.NDArray[Any]) -> str:
     return base64.b64encode(np.ascontiguousarray(array).tobytes()).decode("ascii")
 
 
-@dataclass(frozen=True, slots=True, eq=False)
-class _Snapshot:
-    """Everything a frame shows about one control tick, captured when it ran.
+def _json_safe(value: Any) -> Any:
+    """Recursively replace non-finite floats with ``None``, for ``ViewerSession.run_record``.
 
-    Playback trails the simulation, so a frame cannot read the live mission:
-    by the time a tick is on screen the controller may be seconds further on.
+    pywebview's own bridge (every other payload in this module) round-trips
+    NaN/Infinity as the non-standard JSON its embedded browser also accepts;
+    ``run_record`` is the one payload that leaves Python for another process
+    (ADR 0017), over a boundary that has no reason to share that leniency.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _Scene:
+    """One generated property, ready to fly: everything a seed (and site) builds.
+
+    Built whole, outside ``_lock``, then swapped in with a single assignment,
+    so a build that fails -- an address no wall can take a meter on -- leaves
+    the session exactly on the scene it was showing.
     """
 
-    t: float
-    states: list[DroneState]
-    phase: str
-    ground_band: float
-    total: float
-    #: Per drone id: task kind and goal.
-    tasks: dict[int, tuple[str, Vec3]]
-    landed: frozenset[int]
-    #: Target centroids, shape ``(k, 3)``.
-    frontiers: Points
-    #: Triangle ids first seen on this tick.
-    revealed: npt.NDArray[np.int64]
-    #: Objects classified so far. The mapper replaces, never mutates, the
-    #: objects it publishes, so holding them here needs no copy.
-    detections: tuple[DiscoveredObject, ...]
-    #: Suggested battery sites as the page draws them; ``None`` while mapping.
-    site: dict[str, Any] | None
+    seed: int
+    #: The pinned address, if any; ``None`` is random mode.
+    site: SiteSnapshot | None
+    manifest: SceneManifest
+    geometry: SceneGeometry
+    sensor: RaySensor
+    #: What :meth:`ViewerSession.world` returns; see :func:`_world_payload`.
+    world_payload: dict[str, Any]
 
 
-def _snapshot(run: MissionRun, site: dict[str, Any] | None = None) -> _Snapshot:
-    """Capture ``run`` as it stands after its latest tick."""
-    frontiers = run.controller.frontiers
-    return _Snapshot(
-        t=run.t,
-        states=run.drones,
-        phase=str(run.phase),
-        ground_band=run.mapper.coverage_ground_band,
-        total=run.mapper.coverage_total,
-        tasks={i: (task.kind, task.goal.copy()) for i, task in run.controller.tasks.items()},
-        landed=run.controller.landed,
-        frontiers=np.array([f.centroid for f in frontiers], dtype=np.float64).reshape(-1, 3),
-        revealed=run.mapper.pop_revealed(),
-        detections=tuple(run.mapper.state.discovered.values()),
-        site=site,
-    )
+def _evict_scenes(scene_dir: Path, keep: Collection[Path], limit: int) -> None:
+    """Trim ``scene_dir`` to its ``limit`` most recently used seed directories.
+
+    Only directories named like a seed (all digits) are candidates, so
+    anything else a user put there survives; directories in ``keep`` are
+    never removed and count toward ``limit``. Recency is the directory's
+    mtime, which :meth:`ViewerSession._load_scene` refreshes on every build.
+    A directory that cannot be removed -- a mesh still open elsewhere on
+    Windows, say -- is logged and left for the next pass: this is a cache,
+    and failing to trim it must not fail the scene that triggered the trim.
+    For the same reason a directory that vanishes mid-scan (another viewer
+    process trimming the same cache, a user deleting it) is simply skipped,
+    and a scan that fails outright skips this pass.
+    """
+    try:
+        seed_dirs = [p for p in scene_dir.iterdir() if p.is_dir() and p.name.isdigit()]
+    except OSError as exc:
+        _log.warning("could not scan scene cache %s: %s", scene_dir, exc)
+        return
+    kept = [p for p in seed_dirs if p in keep]
+    others: list[tuple[float, Path]] = []
+    for p in seed_dirs:
+        if p in keep:
+            continue
+        try:
+            others.append((p.stat().st_mtime, p))
+        except OSError:
+            continue  # gone since the listing: nothing left to evict
+    others.sort(key=lambda entry: entry[0], reverse=True)
+    for _, stale in others[max(0, limit - len(kept)) :]:
+        try:
+            shutil.rmtree(stale)
+        except OSError as exc:
+            _log.warning("could not evict cached scene %s: %s", stale, exc)
+        else:
+            _log.debug("evicted cached scene %s", stale)
 
 
 class ViewerSession:
@@ -231,11 +227,27 @@ class ViewerSession:
     second, so both are cached per seed and only rebuilt when the seed changes;
     a drone-count change reuses them and only rebuilds the mission itself.
 
-    Two locks, always taken in this order: ``_sim_lock`` guards the mission
-    and is held for a whole tick; ``_lock`` guards the snapshot buffer and
-    playback clock and is only ever held briefly. pywebview delivers page
-    calls on worker threads, so a frame call must never wait on the first --
-    that would bring back exactly the stall the simulation thread removes.
+    Three locks. ``_sim_lock`` guards the mission and the loaded scene and is
+    held for a whole tick, or a whole scene build; ``_lock`` guards the
+    snapshot buffer, playback clock and the scene/mission the page reads, and
+    is only ever held briefly; ``_job_lock``, owned by the
+    :class:`~canopy.viz.site_jobs.SiteJobs` collaborator, guards a site
+    build's bookkeeping the same way. Taken together it is always in this
+    order -- ``_sim_lock``, then ``_lock``, then ``_job_lock`` -- and only a
+    site install (:meth:`_install_site`) ever needs all three.
+
+    pywebview delivers page calls on worker threads, so a frame must never
+    wait on a lock held across something slow. That ruled out holding
+    ``_sim_lock``/``_lock`` across a replan, which is why the simulation runs
+    on its own thread (see the module docstring); it equally rules out holding
+    ``_lock`` or ``_job_lock`` across a network fetch, a call to
+    :func:`~canopy.worldgen.generate_field` or building a
+    :class:`~canopy.planning.MissionRun`. So every rebuild takes the same
+    shape: build the new scene and mission under ``_sim_lock`` alone -- the
+    simulation thread pauses, playback keeps drawing from the buffer -- then
+    take ``_lock`` just to swap them in. A site build's own worker threads
+    only ever take ``_job_lock`` to check or record progress, never around the
+    slow call itself.
 
     Parameters
     ----------
@@ -250,6 +262,11 @@ class ViewerSession:
         seed. Defaults to ``out/viewer``. Tests pass a ``tmp_path``.
     site_rules
         Battery placement rules. Defaults to the shipped ``config/rules.yaml``.
+    site
+        Real-world data to build the property from, in place of a bare seed.
+        ``None`` (the default) is random mode; :meth:`new_scene` then re-rolls
+        everything. Given a snapshot, the property is rebuilt from it and
+        :meth:`new_scene` re-rolls only what the snapshot could not see.
     """
 
     def __init__(
@@ -260,31 +277,37 @@ class ViewerSession:
         seed: int | None = None,
         scene_dir: Path | None = None,
         site_rules: SiteRules | None = None,
+        site: SiteSnapshot | None = None,
     ) -> None:
         self._cfg = cfg
         self._site_rules = load_site_rules() if site_rules is None else site_rules
-        # Suggested sites for the current mission, once mapping is complete.
-        self._site: dict[str, Any] | None = None
+        # Suggested battery sites for the current mission, once mapping is
+        # complete. Unrelated to the scene's `site` -- this is the finished
+        # mission's output, not the property's own address data -- but the two
+        # names collided before this feature existed, so this one keeps the
+        # name the frame's "site" JSON key and Snapshot.site already commit to.
+        self._battery_site: dict[str, Any] | None = None
         self._sim_lock = threading.Lock()
         self._lock = threading.Lock()
+        self._site_jobs = SiteJobs(cfg, self._install_site)
         self._scene_dir = _DEFAULT_SCENE_DIR if scene_dir is None else Path(scene_dir)
         self._n = self._checked_count(cfg.viewer.drones if drones is None else drones)
-        self._seed = _fresh_seed() if seed is None else seed
         # Bumped on every reset so the page can drop frames that were already in
         # flight when the mission changed underneath them.
         self._epoch = -1
-        # Declared, not assigned: set for real by _load_scene()/_reset() below,
-        # which is the only place either ever runs before a public method could
+        # Declared, not assigned: set for real by _commit() below, which is the
+        # only place any of them is ever assigned before a public method could
         # observe them.
-        self._manifest: SceneManifest
-        self._geometry: SceneGeometry
-        self._sensor: RaySensor
-        self._world_payload: dict[str, Any]
+        self._loaded: _Scene
         self._run: MissionRun
+        self._eta: MappingEta
+        # The whole simulated mission recorded so far (ADR 0017), replaced by
+        # _commit() on every reset; see run_record().
+        self._recorder: RunRecorder
         # The tick on screen (at or before the playback clock), the recorded
         # ticks after it, and revealed ids passed but not yet sent to the page.
-        self._shown: _Snapshot
-        self._buffer: deque[_Snapshot] = deque()
+        self._shown: Snapshot
+        self._buffer: deque[Snapshot] = deque()
         self._unsent: list[npt.NDArray[np.int64]] = []
         self._play_t = 0.0
         # A playback setting, not part of the mission: it survives resets.
@@ -296,8 +319,9 @@ class ViewerSession:
         self._box_default = [c / 255.0 for c in cfg.viewer.detection_default_rgb]
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
-        self._load_scene()
-        self._reset()
+        scene = self._load_scene(_fresh_seed() if seed is None else seed, site, current=None)
+        # No locks yet: nothing else can hold a reference to this session.
+        self._commit(scene, self._n, self._new_run(scene, self._n))
 
     # -- introspection ------------------------------------------------------
     @property
@@ -313,7 +337,7 @@ class ViewerSession:
     @property
     def seed(self) -> int:
         """Seed of the current scene."""
-        return self._seed
+        return self._loaded.seed
 
     @property
     def epoch(self) -> int:
@@ -369,10 +393,12 @@ class ViewerSession:
         ConfigError
             If ``n`` is outside ``[MIN_DRONES, viewer.max_drones]``.
         """
-        with self._sim_lock, self._lock:
-            self._n = self._checked_count(n)
-            self._reset()
-            return self._scene()
+        with self._sim_lock:
+            n = self._checked_count(n)
+            run = self._new_run(self._loaded, n)
+            with self._lock:
+                self._commit(self._loaded, n, run)
+                return self._scene()
 
     def restart(self) -> dict[str, Any]:
         """Rewind to simulated time zero: same property, same swarm, fresh mission.
@@ -380,17 +406,129 @@ class ViewerSession:
         Everything the swarm learned (map, detections, sites) goes with the old
         mission; the property and the time scale stay.
         """
-        with self._sim_lock, self._lock:
-            self._reset()
-            return self._scene()
+        with self._sim_lock:
+            run = self._new_run(self._loaded, self._n)
+            with self._lock:
+                self._commit(self._loaded, self._n, run)
+                return self._scene()
 
     def new_scene(self, seed: int | None = None) -> dict[str, Any]:
-        """Start over with a new seed (random unless given), regenerating the property."""
-        with self._sim_lock, self._lock:
-            self._seed = _fresh_seed() if seed is None else seed
-            self._load_scene()
-            self._reset()
-            return self._scene()
+        """Start over with a new seed (random unless given), regenerating the property.
+
+        In address mode this re-rolls only what the pinned snapshot left to
+        the generator (the meter, openings, bushes, ...): :meth:`_load_scene`
+        always rebuilds from whatever the loaded scene pins, so there is no
+        special case here for either mode.
+        """
+        with self._sim_lock:
+            new_seed = _fresh_seed() if seed is None else seed
+            scene = self._load_scene(new_seed, self._loaded.site, current=self._loaded)
+            run = self._new_run(scene, self._n)
+            with self._lock:
+                self._commit(scene, self._n, run)
+                return self._scene()
+
+    def use_random_location(self) -> dict[str, Any]:
+        """Clear any pinned address and load a fresh random scene.
+
+        A site build already in flight is superseded exactly as a newer one
+        would be (see :meth:`start_site_build`): forgetting the live job means
+        its eventual result, however it turns out, matches nothing by the time
+        it arrives and is dropped.
+        """
+        self._site_jobs.supersede()
+        with self._sim_lock:
+            scene = self._load_scene(_fresh_seed(), None, current=self._loaded)
+            run = self._new_run(scene, self._n)
+            with self._lock:
+                self._commit(scene, self._n, run)
+                return self._scene()
+
+    def suggest_addresses(self, text: str) -> dict[str, Any]:
+        """Address suggestions for the combobox, run outside every session lock.
+
+        pywebview runs each bridge call on its own worker thread, so a slow
+        geocoder only delays this call; it never competes with a frame for
+        ``_sim_lock``/``_lock``, which this never touches.
+
+        Returns
+        -------
+        dict
+            ``suggestions``: a list of ``{label, provider, ref, lat_deg,
+            lon_deg, attribution}``, best first. ``error``: the geocoder's message, or
+            ``None`` -- never raised to the page, which has no use for a
+            Python traceback.
+        """
+        return self._site_jobs.suggest(text)
+
+    def start_site_build(self, suggestion: dict[str, Any], query: str) -> dict[str, Any]:
+        """Fetch ``suggestion`` and, once accepted, build it into the scene.
+
+        Runs on a daemon worker thread, outside every session lock, exactly
+        like :meth:`suggest_addresses`. Starting a build while one is already
+        running supersedes it -- see :mod:`canopy.viz.site_jobs` on supersession.
+
+        Parameters
+        ----------
+        suggestion
+            One entry of :meth:`suggest_addresses`' ``suggestions``.
+        query
+            The text that was being searched when it was picked, passed on to
+            :func:`~canopy.worldgen.fetch_site` for its own notes.
+
+        Returns
+        -------
+        dict
+            ``{"job_id": int}``. Poll progress with :meth:`site_job`.
+        """
+        return self._site_jobs.start(suggestion, query)
+
+    def confirm_site_build(self, job_id: int) -> dict[str, Any]:
+        """Move a ``needs_confirmation`` job on to ``building``, on a fresh worker thread.
+
+        A no-op that just reports the current status, if ``job_id`` is not a
+        job actually awaiting confirmation -- it was already resolved,
+        cancelled, or superseded by a later one.
+
+        Raises
+        ------
+        SimulationError
+            If the job reached ``needs_confirmation`` with no fetched snapshot
+            to build from, which the fetch step never should have allowed --
+            this can only mean a bug in :mod:`canopy.viz.site_jobs`, not bad
+            input.
+        """
+        return self._site_jobs.confirm(job_id)
+
+    def cancel_site_build(self, job_id: int) -> dict[str, Any]:
+        """Mark ``job_id`` cancelled, if it is still the live, unfinished job.
+
+        Its worker thread, if one is running, is not interrupted -- a network
+        fetch has no cancellation hook -- but the state flip is enough: every
+        step it takes before touching the scene checks this first and drops
+        its result if it finds ``cancelled``, the same check a superseding job
+        would trip.
+        """
+        return self._site_jobs.cancel(job_id)
+
+    def site_job(self, job_id: int) -> dict[str, Any]:
+        """Report progress of a build started by :meth:`start_site_build`.
+
+        Returns
+        -------
+        dict
+            ``job_id``, ``state`` (``running``, ``needs_confirmation``,
+            ``done``, ``failed`` or ``cancelled`` -- the last also standing in
+            for "not the live job", e.g. one superseded by a later call),
+            ``stage`` (``fetching`` or ``building``), ``error`` (the failure
+            message, else ``None``), ``verdict`` (as
+            :class:`~canopy.contracts.ResidentialVerdict`, once fetched, else
+            ``None``) and ``location`` (as the ``location`` key of
+            :meth:`scene`, built from the fetched snapshot alone since
+            generation may not have run yet; ``None`` before the fetch
+            completes).
+        """
+        return self._site_jobs.status(job_id)
 
     def set_time_scale(self, scale: float) -> dict[str, Any]:
         """Run simulated time at ``scale`` times wall-clock speed.
@@ -421,8 +559,14 @@ class ViewerSession:
         dict
             ``epoch``, ``seed``, ``drones``, ``max_drones``, ``time_scale``,
             ``min_time_scale``, ``max_time_scale``, ``pads`` (one
-            ``[x, y, z]`` per drone) and ``lot`` (``[[xmin, ymin, zmin],
-            [xmax, ymax, zmax]]``). World frame, metres, Z-up.
+            ``[x, y, z]`` per drone), ``lot`` (``[[xmin, ymin, zmin],
+            [xmax, ymax, zmax]]``, world frame, metres, Z-up) and
+            ``location``: ``mode`` (``"random"`` or ``"address"``), ``label``,
+            ``site_id``, ``verdict`` (``p_residential``, ``decision``,
+            ``reasons``, or ``None`` in random mode), ``observed`` and
+            ``inferred`` (short strings on what the data showed versus what
+            the generator had to invent), ``notes`` (the manifest's) and
+            ``attribution`` (the snapshot's distinct source attributions).
         """
         with self._lock:
             return self._scene()
@@ -444,7 +588,7 @@ class ViewerSession:
             i.e. :attr:`~canopy.contracts.SceneObject.materials` is non-empty.
         """
         with self._lock:
-            return self._world_payload
+            return self._loaded.world_payload
 
     def advance(self, wall_dt_s: float) -> dict[str, Any]:
         """Move playback on by ``wall_dt_s`` seconds and return the pose to draw.
@@ -476,7 +620,12 @@ class ViewerSession:
             ``breakdown``, ``warnings`` (empty unless it breaks a rule) and
             outline ``color`` ``[r, g, b]`` in ``[0, 1]``), ``battery``
             (``[width, depth, height]``, or ``None``) and ``message`` (why
-            there are no sites, else ``None``).
+            there are no sites, else ``None``), and ``mapping``:
+            ``remaining_s`` (estimated simulated seconds of exploration left,
+            :class:`~canopy.planning.MappingEta`; ``None`` until the frontier
+            count has a trend to project, ``0.0`` once mapping has ended) and
+            ``done_at_s`` (simulated time mapping ended, else ``None``). Wall
+            time left is the page's to derive, from :attr:`time_scale`.
 
         Raises
         ------
@@ -492,7 +641,7 @@ class ViewerSession:
                 target = self._play_t + step
             # One tick past the target, so there is a later tick to interpolate
             # toward and the fraction of a tick carries to the next call.
-            while self._latest_t() <= target + _T_EPS:
+            while self._latest_t() <= target + T_EPS:
                 self._produce_one()
         with self._lock:
             if self._worker is not None:
@@ -501,6 +650,84 @@ class ViewerSession:
                 step *= min(1.0, ahead / (_FULL_SPEED_FRACTION * lead))
             self._play_t += step
             return self._consume()
+
+    def run_record(self) -> dict[str, Any]:
+        """Describe the whole simulated mission so far, for the dashboard upload (ADR 0017).
+
+        Unlike :meth:`scene` and :meth:`advance`, this reflects every tick the
+        simulation thread has produced, not the tick :attr:`sim_time_s`
+        reports: the module docstring's ``_LEAD_S`` buffer means playback is
+        always a little behind, and the page uploads once it catches up to the
+        tick that reached ``done``, so the record must already hold everything
+        by then. Every float is finite -- see :func:`_json_safe` -- so the
+        result round-trips through ``json.dumps(..., allow_nan=False)``.
+
+        Returns
+        -------
+        dict
+            ``seed``, ``drones``, ``sim_time_s`` (latest recorded tick),
+            ``phase`` (the live mission's, ahead of whatever :meth:`advance`
+            last returned), ``mapped_at_s`` (simulated time mapping ended,
+            else ``None``), ``coverage`` (``ground_band``, ``total``), ``lot``
+            and ``location`` (as :meth:`scene`), ``tracks`` (per drone ``id``,
+            ``samples`` -- ``[t, x, y, z, yaw, battery]`` rows roughly
+            half a second apart, plus the first tick -- current ``alive`` and
+            ``battery``), ``events`` (as recorded by
+            :class:`~canopy.viz.recording.RunRecorder`: ``t``, ``drone_id``,
+            ``type`` (``capture``,
+            ``low_battery``, ``failure`` or ``complete``), ``message``,
+            ``status`` (``Flying``, ``Idle`` or ``Failed``), ``battery_pct``
+            and ``task``), ``detections`` (as :meth:`advance`'s, for every
+            object the mapper has discovered so far) and ``site`` (as
+            :meth:`advance`'s ``site.sites`` entry shape, or ``None`` before
+            mapping ends).
+        """
+        # All under _sim_lock alone, in one hold, so the tracks, the mission
+        # and the scene they describe all come from the same reset: _commit
+        # writes _loaded/_n/_run/_recorder only under _sim_lock (and _lock),
+        # and _battery_site is written under _sim_lock alone (_produce_one).
+        # _lock is not needed and not taken -- nothing here is playback state.
+        with self._sim_lock:
+            scene = self._loaded
+            record = {
+                "seed": scene.seed,
+                "drones": self._n,
+                "sim_time_s": self._run.t,
+                "phase": str(self._run.phase),
+                "mapped_at_s": self._eta.done_at_s,
+                "coverage": {
+                    "ground_band": self._run.coverage_ground_band,
+                    "total": self._run.coverage_total,
+                },
+                "lot": scene.manifest.lot_bounds.tolist(),
+                "location": location_doc(scene.site, scene.manifest.notes, scene.manifest),
+                "tracks": self._recorder.tracks(),
+                "events": self._recorder.events(),
+                "detections": [
+                    self._detection(obj) for obj in self._run.mapper.state.discovered.values()
+                ],
+                "site": self._battery_site,
+            }
+        # _json_safe is necessarily Any-typed (it recurses into whatever it is
+        # given); the cast just tells mypy what every caller already knows,
+        # that sanitising a dict[str, Any] still leaves a dict[str, Any].
+        return cast("dict[str, Any]", _json_safe(record))
+
+    def intake(self) -> dict[str, Any]:
+        """Where the review API is, and today's swarm-size bounds (ADR 0017's intake step).
+
+        Returns
+        -------
+        dict
+            ``api_url`` (``viewer.review_api_url``), ``drones`` (current swarm
+            size), ``max_drones`` and ``min_drones``.
+        """
+        return {
+            "api_url": self._cfg.viewer.review_api_url,
+            "drones": self._n,
+            "max_drones": self._cfg.viewer.max_drones,
+            "min_drones": MIN_DRONES,
+        }
 
     # -- internals ----------------------------------------------------------
     def _checked_count(self, n: int) -> int:
@@ -511,51 +738,123 @@ class ViewerSession:
             raise ConfigError(msg)
         return n
 
-    def _load_scene(self) -> None:
-        """Generate the property, load its geometry and build its sensor for ``self._seed``.
+    def _load_scene(
+        self, seed: int, site: SiteSnapshot | None, *, current: _Scene | None
+    ) -> _Scene:
+        """Generate the property, load its geometry and build its sensor for ``seed``.
 
-        Cached: worldgen and the Open3D BVH build cost roughly a second, and a
-        drone-count change must not pay it again.
+        Slow -- worldgen and the Open3D BVH build cost roughly a second -- so
+        the caller holds ``_sim_lock`` (serialising builds, and the cache
+        trim below, against each other) but never ``_lock``. The result is
+        built whole and assigned nothing, so the caller commits it or, if this
+        raises, the session is untouched. Kept per seed: a drone-count change
+        reuses the loaded scene and never comes here. Rebuilds from ``site``
+        when one is pinned, so a re-roll in address mode still only touches
+        what the snapshot left to the generator.
+
+        ``current`` is the scene still loaded, if any, whose directory the
+        cache trim must spare along with the new one.
+
+        Raises
+        ------
+        WorldgenError
+            If the property cannot be generated, e.g. an address with no wall
+            that takes a meter.
         """
-        out_dir = self._scene_dir / str(self._seed)
-        manifest = generate_field(self._seed, self._cfg, out_dir=out_dir)
+        out_dir = self._scene_dir / str(seed)
+        manifest = generate_field(seed, self._cfg, out_dir=out_dir, site=site)
         geometry = load_geometry(manifest)
-        sensor = RaySensor(geometry, self._cfg.sensor, np.random.default_rng(self._seed))
-        self._manifest = manifest
-        self._geometry = geometry
-        self._sensor = sensor
-        self._world_payload = _world_payload(self._seed, manifest, geometry)
-
-    def _reset(self) -> None:
-        """Rebuild the mission and put every drone back on its pad."""
-        self._run = MissionRun(
-            self._manifest,
-            self._geometry,
-            self._n,
-            self._cfg,
-            seed=self._seed,
-            sensor=self._sensor,
+        sensor = RaySensor(geometry, self._cfg.sensor, np.random.default_rng(seed))
+        scene = _Scene(
+            seed=seed,
+            site=site,
+            manifest=manifest,
+            geometry=geometry,
+            sensor=sensor,
+            world_payload=_world_payload(seed, manifest, geometry),
         )
-        self._site = None
-        self._shown = _snapshot(self._run)
+        # generate_field rewrites the files in place, which leaves the
+        # directory's own mtime alone; touch it so recency means "last built".
+        out_dir.touch()
+        keep = {out_dir}
+        if current is not None:
+            keep.add(self._scene_dir / str(current.seed))
+        _evict_scenes(self._scene_dir, keep, self._cfg.viewer.scene_cache_max)
+        return scene
+
+    def _new_run(self, scene: _Scene, n: int) -> MissionRun:
+        """Build a fresh mission of ``n`` drones over ``scene``. Caller holds ``_sim_lock`` only.
+
+        Not free -- pads, the survey envelope and the launch scan -- which is
+        why it is built before ``_lock`` is taken, not under it.
+        """
+        return MissionRun(
+            scene.manifest, scene.geometry, n, self._cfg, seed=scene.seed, sensor=scene.sensor
+        )
+
+    def _install_site(self, snapshot: SiteSnapshot, gate: JobGate) -> bool:
+        """Build ``snapshot`` into a fresh scene and swap it in (a site-job worker thread).
+
+        The ``install`` callback :class:`~canopy.viz.site_jobs.SiteJobs` was
+        given. Takes ``_sim_lock`` for the build, then ``_lock`` for the swap,
+        and only inside that has ``gate`` take ``_job_lock`` -- the documented
+        order, never reversed. The swap itself runs inside
+        :meth:`~canopy.viz.site_jobs.JobGate.commit_if_live`, so the liveness
+        check, the commit and the job turning ``done`` are one atomic step.
+        Returns ``False`` without touching the session if the job was
+        cancelled or superseded, before the build or during it.
+
+        Raises
+        ------
+        WorldgenError
+            If the snapshot cannot be built; nothing is committed.
+        """
+        with self._sim_lock:
+            # A hint only: skips a second of generation for a job already dead.
+            if not gate.is_live():
+                return False
+            scene = self._load_scene(_fresh_seed(), snapshot, current=self._loaded)
+            run = self._new_run(scene, self._n)
+            with self._lock:
+                return gate.commit_if_live(functools.partial(self._commit, scene, self._n, run))
+
+    def _commit(self, scene: _Scene, n: int, run: MissionRun) -> None:
+        """Make ``scene`` and ``run`` current, every drone back on its pad.
+
+        Caller holds ``_sim_lock`` and ``_lock`` (or is ``__init__``). Cheap
+        by construction: everything slow was built before either was taken.
+        """
+        self._loaded = scene
+        self._n = n
+        self._run = run
+        self._battery_site = None
+        self._eta = MappingEta(self._cfg.sim.timeout_s)
+        self._shown = take_snapshot(self._run, self._eta)
         self._buffer.clear()
         # The launch scan's reveals go out with the first frame.
         self._unsent = [self._shown.revealed]
         self._play_t = 0.0
         self._epoch += 1
-        _log.debug("viewer reset: %d drone(s), seed=%d, epoch=%d", self._n, self._seed, self._epoch)
+        # The recorded mission (ADR 0017) starts over too, from the pre-tick
+        # state; see RunRecorder for why that logs no fleet events.
+        self._recorder = RunRecorder(run, self._cfg)
+        self._recorder.record(self._shown)
+        _log.debug("viewer reset: %d drone(s), seed=%d, epoch=%d", n, scene.seed, self._epoch)
 
     def _scene(self) -> dict[str, Any]:
         return {
             "epoch": self._epoch,
-            "seed": self._seed,
+            "seed": self._loaded.seed,
             "drones": self._n,
             "max_drones": self._cfg.viewer.max_drones,
             "time_scale": self._time_scale,
             "min_time_scale": MIN_TIME_SCALE,
             "max_time_scale": MAX_TIME_SCALE,
             "pads": self._run.pads.tolist(),
-            "lot": self._manifest.lot_bounds.tolist(),
+            "lot": self._loaded.manifest.lot_bounds.tolist(),
+            "location": location_doc(
+                self._loaded.site, self._loaded.manifest.notes, self._loaded.manifest
+            ),
         }
 
     def _latest_t(self) -> float:
@@ -564,12 +863,14 @@ class ViewerSession:
             return self._buffer[-1].t if self._buffer else self._shown.t
 
     def _produce_one(self) -> None:
-        """Run one control tick and record it."""
+        """Run one control tick, record it for the page's buffer, and log it for ADR 0017."""
         with self._sim_lock:
             self._run.tick()
-            if self._site is None and self._run.phase not in _MAPPING_PHASES:
-                self._site = self._suggest_sites()
-            snap = _snapshot(self._run, self._site)
+            self._eta.update(self._run.t, len(self._run.controller.frontiers), self._run.phase)
+            if self._battery_site is None and self._run.phase not in _MAPPING_PHASES:
+                self._battery_site = self._suggest_sites()
+            snap = take_snapshot(self._run, self._eta, self._battery_site)
+            self._recorder.record(snap)
             # Taken while still holding the sim lock, so a reset cannot slip in
             # between the tick and the append and leave a stale snapshot behind.
             with self._lock:
@@ -591,7 +892,7 @@ class ViewerSession:
 
         Caller holds ``_lock``.
         """
-        while self._buffer and self._buffer[0].t <= self._play_t + _T_EPS:
+        while self._buffer and self._buffer[0].t <= self._play_t + T_EPS:
             self._shown = self._buffer.popleft()
             self._unsent.append(self._shown.revealed)
         if self._buffer:
@@ -609,7 +910,7 @@ class ViewerSession:
         return self._frame(self._shown, nxt, alpha, revealed)
 
     def _frame(
-        self, prev: _Snapshot, cur: _Snapshot, alpha: float, revealed: npt.NDArray[np.int64]
+        self, prev: Snapshot, cur: Snapshot, alpha: float, revealed: npt.NDArray[np.int64]
     ) -> dict[str, Any]:
         prev_pos = np.stack([s.pos for s in prev.states])
         cur_pos = np.stack([s.pos for s in cur.states])
@@ -646,6 +947,7 @@ class ViewerSession:
             "revealed": _b64(revealed.astype(np.int32)),
             "detections": [self._detection(obj) for obj in prev.detections],
             "site": prev.site,
+            "mapping": {"remaining_s": prev.eta_s, "done_at_s": prev.mapped_at_s},
         }
 
     def _suggest_sites(self) -> dict[str, Any]:
@@ -762,194 +1064,3 @@ def _world_payload(seed: int, manifest: SceneManifest, geometry: SceneGeometry) 
 
 def _fresh_seed() -> int:
     return secrets.randbits(_SEED_BITS)
-
-
-@functools.cache
-def drone_model(path: Path | None = None) -> dict[str, Any]:
-    """Load the drone mesh the page draws, in the body frame.
-
-    The body frame is the one :class:`~canopy.contracts.DroneState` yaw is
-    measured in: +X forward at yaw 0, +Z up, origin at the landing-gear contact
-    point, metres. The authored scout faces its native +Z, which
-    :func:`~canopy.worldgen.objio.read_obj` turns into world -Y, so it is turned
-    a further +90 degrees about Z here to put the camera on +X.
-
-    Cached: the file does not change under a running viewer, and the page asks
-    once per load.
-
-    Parameters
-    ----------
-    path
-        OBJ to read. Defaults to :data:`DRONE_MODEL` under the asset root. The
-        MTL is the file of the same stem beside it.
-
-    Returns
-    -------
-    dict
-        ``vertices``: flat ``[x, y, z, ...]`` in the body frame. ``groups``: per
-        material its ``material`` name, ``color`` ``[r, g, b]`` (sRGB, from
-        ``Kd``), ``opacity`` and flat triangle ``indices`` into ``vertices``.
-
-    Raises
-    ------
-    AssetError
-        If the OBJ or MTL is missing or malformed.
-    """
-    obj_path = default_assets_dir().parent / DRONE_MODEL if path is None else path
-    return _front_on_x(obj_path)
-
-
-@functools.cache
-def battery_model(path: Path | None = None) -> dict[str, Any]:
-    """Load the battery mesh the page draws at each suggested site, in the site frame.
-
-    The site frame is the one a :class:`~canopy.contracts.SiteCandidate`
-    implies: +X out of the wall along its normal, +Z up, origin on the wall at
-    ground level. The authored battery faces its native +Z with its back on
-    the wall, so the drone's +90 degree turn puts its front on +X too. It is
-    then slid along the wall until its bounding box -- which takes in a
-    side-mounted disconnect -- is centred on the site, because that box is
-    what ``rules.yaml``'s ``battery`` describes and every clearance was
-    measured from.
-
-    Parameters
-    ----------
-    path
-        OBJ to read. Defaults to :data:`BATTERY_MODEL` under the asset root.
-
-    Returns
-    -------
-    dict
-        As :func:`drone_model`.
-
-    Raises
-    ------
-    AssetError
-        If the OBJ or MTL is missing or malformed.
-    """
-    obj_path = default_assets_dir().parent / BATTERY_MODEL if path is None else path
-    return _front_on_x(obj_path, centre_across=True)
-
-
-def _front_on_x(obj_path: Path, *, centre_across: bool = False) -> dict[str, Any]:
-    """Read an authored model facing native +Z and turn it to face +X.
-
-    With ``centre_across``, also centre its bounding box on ``y = 0``.
-    """
-    objects = read_obj(obj_path)
-    materials = read_mtl(obj_path.with_suffix(".mtl"))
-
-    # Every group of every object shares one vertex array, so a multi-object
-    # file still reaches the page as a single mesh.
-    verts: list[Points] = []
-    groups: list[dict[str, Any]] = []
-    offset = 0
-    for obj in objects.values():
-        verts.append(obj.vertices)
-        for group in obj.groups:
-            mat = materials.get(group.material)
-            groups.append(
-                {
-                    "material": group.material,
-                    "color": list(mat.diffuse) if mat else [0.5, 0.5, 0.5],
-                    "opacity": mat.opacity if mat else 1.0,
-                    "indices": (group.faces + offset).ravel().tolist(),
-                }
-            )
-        offset += len(obj.vertices)
-
-    world = np.concatenate(verts, axis=0)
-    # +90 degrees about Z: (x, y) -> (-y, x), taking the authored front (-Y) to +X.
-    body = np.stack([-world[:, 1], world[:, 0], world[:, 2]], axis=1)
-    if centre_across:
-        body[:, 1] -= (body[:, 1].min() + body[:, 1].max()) / 2.0
-    return {"vertices": body.ravel().tolist(), "groups": groups}
-
-
-class _Bridge:
-    """What the page may call, as ``window.pywebview.api.<name>``.
-
-    pywebview exposes every public attribute of this object to JavaScript, so it
-    is kept deliberately thin and the session itself is never handed over.
-    """
-
-    def __init__(self, session: ViewerSession) -> None:
-        self._session = session
-
-    def scene(self) -> dict[str, Any]:
-        """See :meth:`ViewerSession.scene`."""
-        return self._session.scene()
-
-    def world(self) -> dict[str, Any]:
-        """See :meth:`ViewerSession.world`."""
-        return self._session.world()
-
-    def frame(self, wall_dt_s: float) -> dict[str, Any]:
-        """See :meth:`ViewerSession.advance`."""
-        return self._session.advance(float(wall_dt_s))
-
-    def set_drone_count(self, n: int) -> dict[str, Any]:
-        """See :meth:`ViewerSession.set_drone_count`."""
-        return self._session.set_drone_count(int(n))
-
-    def set_time_scale(self, scale: float) -> dict[str, Any]:
-        """See :meth:`ViewerSession.set_time_scale`."""
-        return self._session.set_time_scale(float(scale))
-
-    def restart(self) -> dict[str, Any]:
-        """See :meth:`ViewerSession.restart`."""
-        return self._session.restart()
-
-    def new_scene(self) -> dict[str, Any]:
-        """See :meth:`ViewerSession.new_scene`."""
-        return self._session.new_scene()
-
-    def drone_model(self) -> dict[str, Any]:
-        """See :func:`drone_model`."""
-        return drone_model()
-
-    def battery_model(self) -> dict[str, Any]:
-        """See :func:`battery_model`."""
-        return battery_model()
-
-
-def launch(session: ViewerSession, *, debug: bool = False) -> None:
-    """Open the Canopy window on ``session`` and block until it is closed.
-
-    Parameters
-    ----------
-    session
-        The mission to render. Its simulation thread is started here and
-        stopped when the window closes.
-    debug
-        Enable the web inspector (right-click, Inspect).
-
-    Raises
-    ------
-    DependencyMissingError
-        If the ``viewer`` dependency group (pywebview) is not installed.
-    """
-    try:
-        import webview  # noqa: PLC0415 - optional dependency, see module docstring
-    except ImportError as exc:  # pragma: no cover - environment dependent
-        msg = "canopy-view needs the `viewer` dependency group: run `uv sync --group viewer`"
-        raise DependencyMissingError(msg) from exc
-
-    viewer = session.config.viewer
-    session.start()
-    webview.create_window(
-        "Canopy",
-        # A plain path, not a file:// URI: pywebview serves local paths over its
-        # built-in HTTP server, and the page's ES-module imports need one.
-        url=str(WEB_DIR / "index.html"),
-        js_api=_Bridge(session),
-        width=viewer.width_px,
-        height=viewer.height_px,
-        min_size=(720, 480),
-        maximized=True,
-        background_color="#EEF1F4",
-    )
-    try:
-        webview.start(debug=debug)
-    finally:
-        session.close()

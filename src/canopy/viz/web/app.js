@@ -1,4 +1,4 @@
-// Canopy viewer. Renders what canopy.viz.viewer.ViewerSession reports.
+// Canopy viewer. Renders what canopy.viz.ViewerSession reports.
 //
 // Python owns the simulation; this page owns only presentation. Each animation
 // frame it hands Python the elapsed wall-clock time through the pywebview bridge
@@ -233,7 +233,7 @@ scene.add(sun, sun.target);
 // Drone model
 // ---------------------------------------------------------------------------
 // The mesh is the authored canopy_scout, which Python reads from the asset
-// library and sends once (canopy.viz.viewer.drone_model). Its geometry is built
+// library and sends once (canopy.viz.models.drone_model). Its geometry is built
 // once into a kit that every drone shares; only the accent material is per drone.
 
 /** Material whose faces are the propellers, split into four spinning rotors. */
@@ -819,6 +819,9 @@ function setLotBoundary(lot) {
 }
 
 function buildScene(desc) {
+  // A new swarm mid-capture means the recording would splice two missions.
+  capture.abandon(desc.epoch);
+  sceneDesc = desc;
   for (const child of [...layout.children]) {
     layout.remove(child);
     disposeTree(child);
@@ -860,6 +863,7 @@ function buildScene(desc) {
 
   setLotBoundary(desc.lot);
   ui.sync(desc);
+  addressPanel.sync(desc.location);
 }
 
 // ---------------------------------------------------------------------------
@@ -1192,7 +1196,8 @@ class FlyCamera {
   onKey(e, down) {
     // Arrow keys belong to the slider while it has focus.
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLButtonElement) return;
-    if (!MOVE_KEYS.has(e.code)) return;
+    // The intake owns the keyboard (and the camera) until the survey starts.
+    if (intake.isOpen || !MOVE_KEYS.has(e.code)) return;
     e.preventDefault();
     this.glide = null;
     if (down) this.keys.add(e.code);
@@ -1299,7 +1304,14 @@ const MOVE_KEYS = new Set([
 // ---------------------------------------------------------------------------
 const hint = {
   el: document.getElementById('hint'),
-  timer: setTimeout(() => hint.dismiss(), 7000),
+  timer: 0,
+  /** Show the hint for ``ms``; armed when the survey starts, not on load, since
+   *  the intake hides it until then. */
+  arm(ms = 7000) {
+    clearTimeout(this.timer);
+    this.el.classList.remove('gone');
+    this.timer = setTimeout(() => this.dismiss(), ms);
+  },
   dismiss() {
     clearTimeout(this.timer);
     this.el.classList.add('gone');
@@ -1334,14 +1346,14 @@ const carousel = {
   meta: document.getElementById('site-meta'),
   warnings: document.getElementById('site-warnings'),
   summaryVerdict: document.getElementById('site-summary-verdict'),
-  summaryText: document.getElementById('site-summary-text'),
   sites: [],
 
-  /** The overall call and its justification, shown above the per-site card. */
+  /** The overall call on the card's header bar; its justification is a
+   *  tooltip, so the card stays one line tall until a site breaks a rule. */
   summary(verdict, justification) {
     this.summaryVerdict.textContent = VERDICT_LABEL[verdict] ?? verdict;
-    this.summaryVerdict.className = `site-summary-verdict verdict-${verdict}`;
-    this.summaryText.textContent = justification;
+    this.summaryVerdict.className = `tag verdict-${verdict}`;
+    this.summaryVerdict.parentElement.title = justification;
   },
 
   init() {
@@ -1368,25 +1380,23 @@ const carousel = {
     this.el.classList.remove('open');
     this.el.hidden = true;
     this.summaryVerdict.textContent = '';
-    this.summaryText.textContent = '';
+    this.summaryVerdict.parentElement.title = '';
   },
 
   render(index) {
     const s = this.sites[index];
     const flagged = s.verdict !== 'pass';
     this.count.textContent = `${index + 1} / ${this.sites.length}`;
-    this.title.textContent = `Battery site ${s.rank}`;
+    this.title.textContent = `Site ${s.rank}`;
     this.verdict.textContent = VERDICT_LABEL[s.verdict] ?? s.verdict;
-    this.verdict.className = `site-verdict verdict-${s.verdict}`;
+    this.verdict.className = `tag verdict-${s.verdict}`;
     const toMeter = s.breakdown.harness_run;
-    this.meta.textContent = typeof toMeter === 'number'
-      ? `${toMeter.toFixed(2)} m (${(toMeter / 0.3048).toFixed(1)} ft) harness run`
-      : '';
-    this.card.classList.toggle('flagged', flagged);
+    this.meta.textContent = typeof toMeter === 'number' ? `${toMeter.toFixed(1)} m run` : '';
+    this.meta.title = typeof toMeter === 'number' ? 'Harness run to the meter' : '';
     this.card.classList.toggle('rejected', s.verdict === 'reject');
     this.card.style.setProperty('--site', `rgb(${s.color.map((c) => Math.round(c * 255)).join(' ')})`);
     this.warnings.replaceChildren(
-      ...(flagged ? s.warnings : ['Meets every placement rule']).map((text) => {
+      ...(flagged ? s.warnings : []).map((text) => {
         const li = document.createElement('li');
         li.textContent = text;
         return li;
@@ -1399,8 +1409,6 @@ const carousel = {
   },
 };
 
-/** Labelled stops under the time-speed slider. */
-const SPEED_TICKS = [0.5, 1, 2, 5, 10];
 /** Slider positions per decade-ish of speed; the input's max. */
 const SPEED_STEPS = 1000;
 
@@ -1413,10 +1421,8 @@ const ui = {
   panel: document.getElementById('settings'),
   slider: document.getElementById('drones'),
   count: document.getElementById('drones-out'),
-  ticks: document.getElementById('drone-ticks'),
   speed: document.getElementById('speed'),
   speedOut: document.getElementById('speed-out'),
-  speedTicks: document.getElementById('speed-ticks'),
   speedRange: null, // [min, max] from the session, set on the first sync
   speedApplied: null,
   speedPending: null,
@@ -1426,6 +1432,11 @@ const ui = {
   showFrontiers: document.getElementById('show-frontiers'),
   showDetections: document.getElementById('show-detections'),
   hud: document.getElementById('hud'),
+  eta: document.getElementById('eta'),
+  etaPhase: document.getElementById('eta-phase'),
+  etaElapsed: document.getElementById('eta-elapsed'),
+  etaValue: document.getElementById('eta-value'),
+  etaFill: document.getElementById('eta-fill'),
   applied: null,
   pending: null,
   debounce: 0,
@@ -1435,15 +1446,17 @@ const ui = {
     this.playpause.addEventListener('click', () => this.setPaused(!paused));
     this.restartBtn.addEventListener('click', () => this.restart());
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && this.isOpen()) this.toggle(false);
+      // The address combobox handles its own Escape (closing its list) and
+      // calls preventDefault() to say so; this must not also close the panel.
+      if (e.key === 'Escape' && this.isOpen() && !e.defaultPrevented) this.toggle(false);
     });
     this.slider.addEventListener('input', () => {
-      this.showCount(Number(this.slider.value), true);
+      this.showCount(Number(this.slider.value));
       clearTimeout(this.debounce);
       this.debounce = setTimeout(() => this.applyCount(), 160);
     });
     this.speed.addEventListener('input', () => {
-      this.showSpeed(this.speedAt(Number(this.speed.value)), true);
+      this.showSpeed(this.speedAt(Number(this.speed.value)));
       this.applySpeed();
     });
     this.newScene.addEventListener('click', () => this.regenerate());
@@ -1474,13 +1487,42 @@ const ui = {
     }
   },
 
-  hudText(frame) {
-    if (!frame) return '';
+  /** The status card, top left: phase and sim clock, time left until mapping
+   *  ends, and coverage. The session estimates simulated seconds left
+   *  (planning.MappingEta, from how fast the frontier count is draining).
+   *  Without a trend to project yet, the bar runs indeterminate rather than
+   *  guess. */
+  showStatus(frame) {
+    this.eta.hidden = !frame;
+    if (!frame) return;
+    const clock = (s) => {
+      const whole = Math.max(0, Math.round(s));
+      return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+    };
     const pct = (x) => `${Math.round(x * 100)}%`;
-    const pausedTag = paused ? 'Paused · ' : '';
-    if (frame.phase === 'done') return `${pausedTag}Done`;
-    const label = frame.phase.charAt(0).toUpperCase() + frame.phase.slice(1);
-    return `${pausedTag}${label} · Ground band ${pct(frame.coverage.ground_band)} · Surfaces ${pct(frame.coverage.total)}`;
+    const phase = paused ? 'Paused' : frame.phase;
+    // Only touch the live region when the words change, not every frame.
+    if (this.etaPhase.textContent !== phase) this.etaPhase.textContent = phase;
+    this.eta.classList.toggle('status-paused', paused);
+    this.hud.textContent =
+      `Ground ${pct(frame.coverage.ground_band)} · Surfaces ${pct(frame.coverage.total)}`;
+
+    const { remaining_s: left, done_at_s: doneAt } = frame.mapping;
+    this.etaElapsed.textContent = clock(doneAt ?? frame.t);
+    let fraction = null;
+    if (doneAt !== null) {
+      this.etaValue.textContent = 'Mapped';
+      fraction = 1;
+    } else if (frame.phase === 'takeoff') {
+      this.etaValue.textContent = 'Taking off';
+    } else if (left === null) {
+      this.etaValue.textContent = 'Estimating…';
+    } else {
+      this.etaValue.textContent = `${clock(left)} left`;
+      fraction = frame.t / (frame.t + left);
+    }
+    this.eta.classList.toggle('eta-pending', fraction === null);
+    this.etaFill.style.width = fraction === null ? '' : `${(fraction * 100).toFixed(1)}%`;
   },
 
   // Pausing is purely presentational bookkeeping: the loop keeps polling so
@@ -1490,7 +1532,7 @@ const ui = {
     paused = on;
     this.playpause.setAttribute('aria-pressed', String(on));
     this.playpause.setAttribute('aria-label', on ? 'Resume' : 'Pause');
-    this.hud.textContent = this.hudText(latest);
+    this.showStatus(latest);
   },
 
   isOpen() {
@@ -1505,18 +1547,11 @@ const ui = {
     if (!open) canvas.focus();
   },
 
-  showCount(n, bump) {
+  showCount(n) {
     const max = Number(this.slider.max);
     const min = Number(this.slider.min);
     this.count.textContent = String(n);
     this.slider.style.setProperty('--fill', `${((n - min) / (max - min || 1)) * 100}%`);
-    [...this.ticks.children].forEach((t, i) => t.classList.toggle('on', i + min <= n));
-    if (bump) {
-      this.count.classList.remove('bump');
-      void this.count.offsetWidth; // restart the transition
-      this.count.classList.add('bump');
-      setTimeout(() => this.count.classList.remove('bump'), 180);
-    }
   },
 
   // The slider position is a log-scale exponent: position p of SPEED_STEPS
@@ -1535,37 +1570,21 @@ const ui = {
     return (Math.log(v / min) / Math.log(max / min)) * SPEED_STEPS;
   },
 
-  showSpeed(v, bump) {
+  showSpeed(v) {
     this.speedOut.textContent = `${v}\u00d7`;
     const fill = this.speedPos(v) / SPEED_STEPS;
     this.speed.style.setProperty('--fill', `${fill * 100}%`);
-    for (const t of this.speedTicks.children) t.classList.toggle('on', Number(t.dataset.v) <= v);
-    if (bump) {
-      this.speedOut.classList.remove('bump');
-      void this.speedOut.offsetWidth; // restart the transition
-      this.speedOut.classList.add('bump');
-      setTimeout(() => this.speedOut.classList.remove('bump'), 180);
-    }
   },
 
   syncSpeed(desc) {
     if (!this.speedRange) {
       this.speedRange = [desc.min_time_scale, desc.max_time_scale];
       this.speed.max = String(SPEED_STEPS);
-      this.speedTicks.replaceChildren(
-        ...SPEED_TICKS.filter((v) => v >= desc.min_time_scale && v <= desc.max_time_scale).map((v) => {
-          const s = document.createElement('span');
-          s.textContent = `${v}\u00d7`;
-          s.dataset.v = String(v);
-          s.style.setProperty('--at', String(this.speedPos(v) / SPEED_STEPS));
-          return s;
-        }),
-      );
     }
     this.speedApplied = desc.time_scale;
     if (this.speedPending === null) {
       this.speed.value = String(Math.round(this.speedPos(desc.time_scale)));
-      this.showSpeed(desc.time_scale, false);
+      this.showSpeed(desc.time_scale);
     }
   },
 
@@ -1587,20 +1606,11 @@ const ui = {
 
   sync(desc) {
     this.syncSpeed(desc);
-    if (this.ticks.children.length !== desc.max_drones) {
-      this.slider.max = String(desc.max_drones);
-      this.ticks.replaceChildren(
-        ...Array.from({ length: desc.max_drones }, (_, i) => {
-          const s = document.createElement('span');
-          s.textContent = String(i + 1);
-          return s;
-        }),
-      );
-    }
+    this.slider.max = String(desc.max_drones);
     this.applied = desc.drones;
     if (this.pending === null) {
       this.slider.value = String(desc.drones);
-      this.showCount(desc.drones, false);
+      this.showCount(desc.drones);
     }
   },
 
@@ -1666,6 +1676,1386 @@ const ui = {
 };
 
 // ---------------------------------------------------------------------------
+// Scene section: Random / Address. Presentation only -- every decision about
+// what the property becomes is Python's; this only calls the bridge and
+// renders whatever it reports. site_job() is polled every SITE_POLL_MS while
+// a build is running; a needs_confirmation job stops polling until the user
+// answers, since nothing changes until they do.
+// ---------------------------------------------------------------------------
+const SITE_POLL_MS = 500;
+/** No request for fewer than this many characters, and debounced besides. */
+const ADDRESS_MIN_CHARS = 3;
+const ADDRESS_DEBOUNCE_MS = 250;
+/** Human labels for a ResidentialDecision (canopy.contracts), keyed by its wire value. */
+const RESIDENTIAL_LABEL = { accept: 'Confirmed home', ask: 'Needs confirmation', reject: 'Rejected' };
+
+/** One line on where a running site-build job has got to. A busy map server
+ *  is retried for up to a minute or so; the job's ``detail`` says so, which
+ *  keeps a slow fetch from looking like a hung one. */
+function siteJobText(status) {
+  const label = status.location?.label;
+  const headline =
+    status.stage === 'building'
+      ? 'Building the property…'
+      : label
+        ? `Fetching data for ${label}…`
+        : 'Fetching address data…';
+  return status.detail ? `${headline} ${status.detail}` : headline;
+}
+
+/** Rebuild the page from whatever scene Python now holds (after a site build
+ *  swapped it in, say), or from ``desc`` when a bridge call already returned it. */
+async function reloadScene(desc = null) {
+  const next = desc ?? (await api().scene());
+  await ui.syncWorld(next);
+  buildScene(next);
+  return next;
+}
+
+/** An address search box over suggest_addresses(), shared by the settings
+ *  panel and the intake: debounced, a stale response dropped, arrow keys /
+ *  Enter / Escape, and the geocoder's credit under the options. The owner
+ *  hears about a pick (``onPick``), about the text being edited away from one
+ *  (``onEdit``), and about each result list (``onResults``, with its length). */
+class AddressCombobox {
+  constructor(input, listbox, { onPick = () => {}, onEdit = () => {}, onResults = () => {} } = {}) {
+    this.input = input;
+    this.listbox = listbox;
+    this.onPick = onPick;
+    this.onEdit = onEdit;
+    this.onResults = onResults;
+    this.suggestions = [];
+    this.active = -1; // highlighted listbox index, or -1 for none
+    this.seq = 0; // bumped per request; a response for an older one is dropped
+    this.debounce = 0;
+    this.picked = null;
+    input.addEventListener('input', () => this.onType());
+    input.addEventListener('keydown', (e) => this.onKey(e));
+    // A click on an option fires this before it, unless the mousedown that
+    // starts it is itself prevented -- see render().
+    input.addEventListener('blur', () => this.close());
+  }
+
+  /** Back to an empty box, dropping any request still in flight. */
+  reset() {
+    clearTimeout(this.debounce);
+    this.seq += 1;
+    this.picked = null;
+    this.input.value = '';
+    this.close();
+  }
+
+  onType() {
+    this.picked = null;
+    this.onEdit();
+    const text = this.input.value.trim();
+    clearTimeout(this.debounce);
+    if (text.length < ADDRESS_MIN_CHARS) {
+      this.seq += 1;
+      this.close();
+      return;
+    }
+    this.debounce = setTimeout(() => this.fetch(text), ADDRESS_DEBOUNCE_MS);
+  }
+
+  async fetch(text) {
+    const mine = ++this.seq;
+    let result;
+    try {
+      result = await api().suggest_addresses(text);
+    } catch (err) {
+      if (mine === this.seq) toast.show(errorText(err));
+      return;
+    }
+    if (mine !== this.seq) return; // a later keystroke's request has since landed
+    if (result.error) {
+      this.close();
+      toast.show(result.error);
+      return;
+    }
+    this.render(result.suggestions);
+    this.onResults(result.suggestions.length);
+  }
+
+  render(suggestions) {
+    this.suggestions = suggestions;
+    this.active = -1;
+    this.listbox.replaceChildren(
+      ...suggestions.map((s, i) => {
+        const li = document.createElement('li');
+        li.id = `${this.listbox.id}-${i}`;
+        li.role = 'option';
+        li.className = 'combobox-option';
+        li.textContent = s.label;
+        // preventDefault keeps focus in the input, so blur (which closes the
+        // list) never fires before the click that picks an option does.
+        li.addEventListener('mousedown', (e) => e.preventDefault());
+        li.addEventListener('click', () => this.select(i));
+        return li;
+      }),
+    );
+    // Geoapify's free plan requires its credit wherever its results are
+    // shown; OpenStreetMap's licence asks the same of Photon's. It goes after
+    // the options, so option i stays listbox child i.
+    const credit = suggestions.some((s) => s.provider === 'geoapify')
+      ? 'Powered by Geoapify · © OpenStreetMap contributors'
+      : [...new Set(suggestions.map((s) => s.attribution).filter(Boolean))].join(' · ');
+    if (credit) {
+      const li = document.createElement('li');
+      li.role = 'none';
+      li.className = 'combobox-credit';
+      li.textContent = credit;
+      this.listbox.append(li);
+    }
+    const open = suggestions.length > 0;
+    this.listbox.hidden = !open;
+    this.input.setAttribute('aria-expanded', String(open));
+    this.input.setAttribute('aria-activedescendant', '');
+  }
+
+  close() {
+    this.suggestions = [];
+    this.active = -1;
+    this.listbox.hidden = true;
+    this.listbox.replaceChildren();
+    this.input.setAttribute('aria-expanded', 'false');
+    this.input.setAttribute('aria-activedescendant', '');
+  }
+
+  highlight(index) {
+    const options = [...this.listbox.children];
+    options.forEach((el, i) => el.classList.toggle('active', i === index));
+    this.active = index;
+    this.input.setAttribute('aria-activedescendant', index >= 0 ? `${this.listbox.id}-${index}` : '');
+    options[index]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  onKey(e) {
+    if (this.listbox.hidden) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      this.highlight(Math.min(this.active + 1, this.suggestions.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      this.highlight(Math.max(this.active - 1, 0));
+    } else if (e.key === 'Enter' && this.active >= 0) {
+      e.preventDefault();
+      this.select(this.active);
+    } else if (e.key === 'Escape') {
+      // Close the list only; the owner's own Escape handling skips this
+      // event because it is marked defaultPrevented.
+      e.preventDefault();
+      this.close();
+    }
+  }
+
+  select(index) {
+    this.picked = this.suggestions[index];
+    this.input.value = this.picked.label;
+    this.close();
+    this.onPick(this.picked);
+    this.input.focus();
+  }
+}
+
+const addressPanel = {
+  modeRandom: document.getElementById('loc-mode-random'),
+  modeAddress: document.getElementById('loc-mode-address'),
+  randomPane: document.getElementById('loc-random'),
+  addressPane: document.getElementById('loc-address'),
+  input: document.getElementById('loc-address-input'),
+  listbox: document.getElementById('loc-address-listbox'),
+  buildBtn: document.getElementById('loc-build'),
+  progress: document.getElementById('loc-progress'),
+  stageText: document.getElementById('loc-stage-text'),
+  confirm: document.getElementById('loc-confirm'),
+  confirmText: document.getElementById('loc-confirm-text'),
+  confirmYes: document.getElementById('loc-confirm-yes'),
+  confirmNo: document.getElementById('loc-confirm-no'),
+  card: document.getElementById('loc-card'),
+  cardLabel: document.getElementById('loc-card-label'),
+  cardVerdict: document.getElementById('loc-card-verdict'),
+  cardObserved: document.getElementById('loc-card-observed'),
+  cardInferred: document.getElementById('loc-card-inferred'),
+  cardNotes: document.getElementById('loc-card-notes'),
+  cardAttribution: document.getElementById('loc-card-attribution'),
+  newSeedBtn: document.getElementById('loc-new-seed'),
+
+  lastMode: null, // the backend mode last reflected; sync() is a no-op otherwise
+  combo: null, // AddressCombobox; its ``picked`` is what "Build site" would fetch
+  poll: 0,
+  jobId: null,
+
+  get picked() {
+    return this.combo.picked;
+  },
+
+  init() {
+    this.modeRandom.addEventListener('click', () => {
+      this.showMode('random');
+      this.switchToRandom();
+    });
+    this.modeAddress.addEventListener('click', () => this.showMode('address'));
+    this.combo = new AddressCombobox(this.input, this.listbox, {
+      onPick: () => {
+        this.buildBtn.disabled = false;
+      },
+      onEdit: () => {
+        this.buildBtn.disabled = true;
+      },
+    });
+    this.buildBtn.addEventListener('click', () => this.build());
+    this.confirmYes.addEventListener('click', () => this.confirmJob());
+    this.confirmNo.addEventListener('click', () => this.cancelJob());
+    this.newSeedBtn.addEventListener('click', () => ui.regenerate());
+  },
+
+  /** Reflect the backend's own idea of the mode; called after every scene
+   *  refresh. Deliberately does not reset the form on every call -- an
+   *  unrelated change (the drone-count slider, say) must never clobber an
+   *  address search in progress -- only an actual mode change, or a fresh
+   *  ``site_id``, does anything. */
+  sync(loc) {
+    if (loc.mode !== this.lastMode) this.showMode(loc.mode);
+    this.lastMode = loc.mode;
+    if (loc.mode === 'address' && loc.site_id) this.renderCard(loc);
+  },
+
+  showMode(mode) {
+    const isAddress = mode === 'address';
+    this.modeRandom.setAttribute('aria-pressed', String(!isAddress));
+    this.modeAddress.setAttribute('aria-pressed', String(isAddress));
+    this.randomPane.hidden = isAddress;
+    this.addressPane.hidden = !isAddress;
+  },
+
+  async switchToRandom() {
+    try {
+      const desc = await api().use_random_location();
+      await ui.syncWorld(desc);
+      buildScene(desc);
+    } catch (err) {
+      toast.show(errorText(err));
+    }
+    this.resetTransient();
+  },
+
+  /** Back to an empty address form: no input, no job, nothing shown. Only
+   *  called when the user explicitly leaves address mode -- never from
+   *  sync(), which must survive an unrelated scene refresh untouched. */
+  resetTransient() {
+    clearTimeout(this.poll);
+    this.jobId = null;
+    this.combo.reset();
+    this.buildBtn.disabled = true;
+    this.hideProgress();
+    this.confirm.hidden = true;
+    this.card.hidden = true;
+  },
+
+  async build() {
+    if (!this.picked) return;
+    this.buildBtn.disabled = true;
+    this.confirm.hidden = true;
+    this.card.hidden = true;
+    this.showProgress('Fetching address data…');
+    try {
+      const { job_id: jobId } = await api().start_site_build(this.picked, this.input.value.trim());
+      this.jobId = jobId;
+      this.pollJob();
+    } catch (err) {
+      toast.show(errorText(err));
+      this.hideProgress();
+      this.buildBtn.disabled = false;
+    }
+  },
+
+  async pollJob() {
+    clearTimeout(this.poll);
+    let status;
+    try {
+      status = await api().site_job(this.jobId);
+    } catch (err) {
+      toast.show(errorText(err));
+      return;
+    }
+    if (status.state === 'running') {
+      this.showProgress(siteJobText(status));
+      this.poll = setTimeout(() => this.pollJob(), SITE_POLL_MS);
+    } else if (status.state === 'needs_confirmation') {
+      this.showConfirmation(status);
+    } else if (status.state === 'failed') {
+      toast.show(status.error ?? 'The site could not be built.');
+      this.jobId = null;
+      this.hideProgress();
+      this.buildBtn.disabled = !this.picked;
+    } else if (status.state === 'done') {
+      // The scene has already been swapped in on the Python side; pick up its
+      // fresh description the same way regenerate() does.
+      this.hideProgress();
+      try {
+        await reloadScene();
+      } catch (err) {
+        toast.show(errorText(err));
+      }
+    } else {
+      // 'cancelled', or a job id nothing knows about any more.
+      this.jobId = null;
+      this.hideProgress();
+      this.buildBtn.disabled = !this.picked;
+    }
+  },
+
+  showProgress(text) {
+    this.stageText.textContent = text;
+    this.progress.hidden = false;
+  },
+
+  hideProgress() {
+    this.progress.hidden = true;
+  },
+
+  showConfirmation(status) {
+    this.hideProgress();
+    const pct = Math.round((status.verdict?.p_residential ?? 0) * 100);
+    this.confirmText.textContent =
+      `We couldn't confirm this is a home (${pct}% likely). Build it anyway?`;
+    this.confirm.hidden = false;
+  },
+
+  async confirmJob() {
+    this.confirm.hidden = true;
+    this.showProgress('Building the property…');
+    try {
+      await api().confirm_site_build(this.jobId);
+      this.pollJob();
+    } catch (err) {
+      toast.show(errorText(err));
+      this.jobId = null;
+      this.hideProgress();
+      this.buildBtn.disabled = !this.picked;
+    }
+  },
+
+  async cancelJob() {
+    clearTimeout(this.poll);
+    const id = this.jobId;
+    this.jobId = null;
+    this.confirm.hidden = true;
+    this.hideProgress();
+    this.buildBtn.disabled = !this.picked;
+    try {
+      await api().cancel_site_build(id);
+    } catch (err) {
+      toast.show(errorText(err));
+    }
+  },
+
+  renderCard(loc) {
+    this.card.hidden = false;
+    this.cardLabel.textContent = loc.label;
+    const pct = Math.round(loc.verdict.p_residential * 100);
+    const label = RESIDENTIAL_LABEL[loc.verdict.decision] ?? loc.verdict.decision;
+    this.cardVerdict.textContent = `${label} · ${pct}% likely a home`;
+    this.cardObserved.textContent = loc.observed.join(', ') || '—';
+    this.cardInferred.textContent = loc.inferred.join(', ') || '—';
+    this.cardNotes.replaceChildren(
+      ...loc.notes.map((note) => {
+        const li = document.createElement('li');
+        li.textContent = note;
+        return li;
+      }),
+    );
+    this.cardAttribution.textContent = loc.attribution.join(' · ');
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Intro camera: a slow orbit of the property behind the intake, then an eased
+// flight along the same circle into the fly camera's home pose. Riding the
+// orbit rather than lerping straight there keeps the move from cutting
+// through the house when the orbit happens to be on the far side.
+// ---------------------------------------------------------------------------
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** Where the fly camera starts (see FlyCamera), and what it looks at. */
+const FLY_HOME = new THREE.Vector3(-28, 27, 32);
+const FLY_TARGET = new THREE.Vector3(0, 0, 0);
+const INTRO = { radius: 38, height: 14, spin: 0.045 /* rad/s */, handOffMs: 2600 };
+
+const intro = {
+  active: true,
+  angle: Math.atan2(FLY_HOME.z, FLY_HOME.x) - 1.1,
+  flight: null, // { t, ms, from: {angle, radius, height}, to: {...}, done }
+
+  update(dt) {
+    let { angle } = this;
+    let radius = INTRO.radius;
+    let height = INTRO.height;
+    const f = this.flight;
+    if (f) {
+      f.t = Math.min(f.t + (dt * 1000) / f.ms, 1);
+      const e = f.t < 0.5 ? 4 * f.t ** 3 : 1 - (-2 * f.t + 2) ** 3 / 2; // ease in-out cubic
+      angle = f.from.angle + (f.to.angle - f.from.angle) * e;
+      radius = f.from.radius + (f.to.radius - f.from.radius) * e;
+      height = f.from.height + (f.to.height - f.from.height) * e;
+    } else if (!reducedMotion) {
+      this.angle += INTRO.spin * dt;
+    }
+    camera.position.set(Math.cos(angle) * radius, height, Math.sin(angle) * radius);
+    camera.lookAt(FLY_TARGET);
+    if (f && f.t === 1) {
+      // Hand the camera over exactly where the fly camera expects to be.
+      this.active = false;
+      this.flight = null;
+      fly.pos.copy(camera.position);
+      fly.vel.set(0, 0, 0);
+      fly.glide = null;
+      fly.yaw = undefined;
+      fly.lookAt(FLY_TARGET);
+      fly.yaw = fly.goalYaw;
+      fly.pitch = fly.goalPitch;
+      f.done?.();
+    }
+  },
+
+  /** Fly from wherever the orbit is to the home pose over ``ms``; ``done``
+   *  runs once the fly camera has control. */
+  handOff(ms, done) {
+    const toAngle = Math.atan2(FLY_HOME.z, FLY_HOME.x);
+    const turn = Math.atan2(Math.sin(toAngle - this.angle), Math.cos(toAngle - this.angle));
+    this.flight = {
+      t: 0,
+      ms: Math.max(ms, 1),
+      from: { angle: this.angle, radius: INTRO.radius, height: INTRO.height },
+      to: { angle: this.angle + turn, radius: Math.hypot(FLY_HOME.x, FLY_HOME.z), height: FLY_HOME.y },
+      done,
+    };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Intake (ADR 0017): name, email, address, options -- one question a page --
+// then either an address build and a recorded survey, or (Skip) a local run
+// of the random property already loaded. Every step sits in one grid cell and
+// carries data-pos past | current | future; CSS does the moving.
+// ---------------------------------------------------------------------------
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+/** Where the review API is when the bridge predates intake(). */
+const DEFAULT_API_URL = 'http://localhost:4000';
+/** Wall time from "go" until the HUD starts fading in: most of the flight. */
+const HUD_REVEAL_FRACTION = 0.7;
+
+const intake = {
+  el: document.getElementById('intake'),
+  form: document.getElementById('intake-form'),
+  live: document.getElementById('intake-live'),
+  back: document.getElementById('intake-back'),
+  next: document.getElementById('intake-next'),
+  dots: [...document.querySelectorAll('#intake-dots li')],
+  skip: document.getElementById('intake-skip'),
+  name: document.getElementById('q-name'),
+  email: document.getElementById('q-email'),
+  address: document.getElementById('q-address'),
+  seg: document.getElementById('q-drones'),
+  build: document.getElementById('q-build'),
+  buildTitle: document.getElementById('q-build-title'),
+  buildDetail: document.getElementById('q-build-detail'),
+  buildConfirm: document.getElementById('q-build-confirm'),
+  buildYes: document.getElementById('q-build-yes'),
+  buildNo: document.getElementById('q-build-no'),
+  errors: {
+    name: document.getElementById('q-name-error'),
+    email: document.getElementById('q-email-error'),
+    address: document.getElementById('q-address-error'),
+  },
+  /** The four questions, then the build panel, in slide order. */
+  pages: [...document.querySelectorAll('#intake-form > .q')],
+  QUESTIONS: 4,
+  BUILD: 4, // page index of the build panel
+
+  isOpen: true,
+  page: 0,
+  combo: null,
+  apiUrl: DEFAULT_API_URL,
+  drones: 3,
+  defaultDrones: 3,
+  jobId: null,
+  poll: 0,
+  busy: false, // a build or launch is under way; ignore further submits
+
+  init() {
+    this.combo = new AddressCombobox(this.address, document.getElementById('q-address-listbox'), {
+      onPick: () => {
+        this.setError('address', '');
+        this.refresh();
+      },
+      onEdit: () => {
+        this.setError('address', '');
+        this.refresh();
+      },
+      onResults: (n) => this.setError('address', n ? '' : 'No matching addresses yet. Keep typing.'),
+    });
+    for (const key of ['name', 'email']) {
+      this[key].addEventListener('input', () => {
+        this.setError(key, '');
+        this.refresh();
+      });
+    }
+    this.back.addEventListener('click', () => this.go(-1));
+    this.next.addEventListener('click', () => this.go(1));
+    this.skip.addEventListener('click', () => this.skipToLocal());
+    this.form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (this.page === this.QUESTIONS - 1) this.submit();
+    });
+    this.el.addEventListener('keydown', (e) => this.onKey(e));
+    this.buildYes.addEventListener('click', () => this.confirmBuild());
+    this.buildNo.addEventListener('click', () => this.abortBuild());
+    this.renderDrones(1, 5);
+    this.show(0);
+  },
+
+  /** Pick up the API location and drone limits once the bridge is ready. An
+   *  older bridge without intake() still gets a working form. */
+  async configure(desc) {
+    let cfg = null;
+    try {
+      if (typeof api().intake === 'function') cfg = await api().intake();
+    } catch (err) {
+      console.warn('intake() failed; using defaults', err);
+    }
+    this.apiUrl = String(cfg?.api_url ?? DEFAULT_API_URL).replace(/\/+$/, '');
+    this.defaultDrones = cfg?.drones ?? desc.drones;
+    this.drones = this.defaultDrones;
+    this.renderDrones(cfg?.min_drones ?? 1, cfg?.max_drones ?? desc.max_drones);
+  },
+
+  renderDrones(min, max) {
+    const buttons = [];
+    for (let n = min; n <= max; n++) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.role = 'radio';
+      b.textContent = String(n);
+      b.setAttribute('aria-label', `${n} drone${n === 1 ? '' : 's'}`);
+      b.addEventListener('click', () => this.setDrones(n, true));
+      b.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          // Enter advances everywhere else in the intake; here that is Start.
+          e.preventDefault();
+          this.submit();
+          return;
+        }
+        const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+        if (!step) return;
+        e.preventDefault();
+        this.setDrones(THREE.MathUtils.clamp(this.drones + step, min, max), true);
+      });
+      b.dataset.n = String(n);
+      buttons.push(b);
+    }
+    this.seg.replaceChildren(...buttons);
+    this.setDrones(THREE.MathUtils.clamp(this.drones, min, max), false);
+  },
+
+  setDrones(n, focus) {
+    this.drones = n;
+    for (const b of this.seg.children) {
+      const on = Number(b.dataset.n) === n;
+      b.setAttribute('aria-checked', String(on));
+      b.tabIndex = on ? 0 : -1; // roving tab stop: Tab lands on the choice
+      if (on && focus) b.focus();
+    }
+  },
+
+  setError(key, text) {
+    this.errors[key].textContent = text;
+    const input = this[key];
+    if (text && key !== 'address') input.setAttribute('aria-invalid', 'true');
+    else input.removeAttribute('aria-invalid');
+  },
+
+  valid(page) {
+    if (page === 0) return this.name.value.trim().length > 0;
+    if (page === 1) return EMAIL_RE.test(this.email.value.trim());
+    if (page === 2) return this.combo.picked !== null;
+    return true;
+  },
+
+  /** Why ``page`` can't be left yet, for the error line under it. */
+  explain(page) {
+    if (page === 0) this.setError('name', 'Enter the member’s name.');
+    if (page === 1) this.setError('email', 'That doesn’t look like an email address.');
+    if (page === 2) {
+      const typed = this.address.value.trim();
+      this.setError('address', typed ? 'Choose one of the suggested addresses.' : 'Search for the member’s address.');
+    }
+  },
+
+  /** Enable the arrows for the page on screen. */
+  refresh() {
+    const q = this.page < this.QUESTIONS;
+    this.back.disabled = !q || this.page === 0;
+    this.next.disabled = !q || !this.valid(this.page);
+    const last = this.page === this.QUESTIONS - 1;
+    this.next.setAttribute('aria-label', last ? 'Start survey' : 'Next question');
+    this.next.classList.toggle('is-start', last);
+  },
+
+  show(page, { focus = true } = {}) {
+    this.page = page;
+    this.pages.forEach((el, i) => {
+      el.dataset.pos = i < page ? 'past' : i === page ? 'current' : 'future';
+      el.inert = i !== page;
+    });
+    this.dots.forEach((dot, i) => {
+      dot.classList.toggle('done', i < page);
+      dot.classList.toggle('current', i === page);
+    });
+    this.el.classList.toggle('building', page === this.BUILD);
+    this.refresh();
+    if (page < this.QUESTIONS) {
+      const title = this.pages[page].querySelector('.q-title').textContent;
+      this.live.textContent = `Question ${page + 1} of ${this.QUESTIONS}: ${title}`;
+    }
+    if (!focus) return;
+    const target =
+      page === 3
+        ? this.seg.querySelector('[aria-checked="true"]') ?? this.next
+        : this.pages[page].querySelector('input, button:not([hidden])');
+    // The page is already visible (visibility flips at once); preventScroll
+    // keeps the browser from nudging the stage while the slide runs.
+    target?.focus({ preventScroll: true });
+  },
+
+  go(delta) {
+    if (!this.isOpen || this.busy || this.page >= this.QUESTIONS) return;
+    if (delta > 0 && !this.valid(this.page)) {
+      this.explain(this.page);
+      return;
+    }
+    if (delta > 0 && this.page === this.QUESTIONS - 1) {
+      this.submit();
+      return;
+    }
+    const page = THREE.MathUtils.clamp(this.page + delta, 0, this.QUESTIONS - 1);
+    if (page !== this.page) this.show(page);
+  },
+
+  onKey(e) {
+    if (e.defaultPrevented || !this.isOpen) return;
+    const inText = e.target instanceof HTMLInputElement;
+    if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
+      // Also stops the form's implicit submission from a text field.
+      e.preventDefault();
+      this.go(1);
+    } else if (e.key === 'Escape' && this.page > 0 && this.page < this.QUESTIONS) {
+      e.preventDefault();
+      this.go(-1);
+    } else if (!inText && !this.seg.contains(e.target) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      this.go(e.key === 'ArrowLeft' ? -1 : 1);
+    }
+  },
+
+  /** "Start survey": build the chosen address, then fly it and record. */
+  async submit() {
+    if (this.busy || !sceneDesc) return;
+    for (let page = 0; page < this.QUESTIONS; page++) {
+      if (!this.valid(page)) {
+        this.show(page);
+        this.explain(page);
+        return;
+      }
+    }
+    this.busy = true;
+    const picked = this.combo.picked;
+    this.buildTitle.textContent = `Surveying ${picked.label}`;
+    this.buildDetail.textContent = 'Fetching map data…';
+    this.buildConfirm.hidden = true;
+    this.build.classList.remove('paused');
+    this.show(this.BUILD, { focus: false });
+    try {
+      const { job_id: jobId } = await api().start_site_build(picked, this.address.value.trim());
+      this.jobId = jobId;
+      this.pollBuild();
+    } catch (err) {
+      this.buildFailed(errorText(err));
+    }
+  },
+
+  async pollBuild() {
+    clearTimeout(this.poll);
+    const id = this.jobId;
+    let status;
+    try {
+      status = await api().site_job(id);
+    } catch (err) {
+      this.buildFailed(errorText(err));
+      return;
+    }
+    if (id !== this.jobId) return; // abandoned while the call was out
+    if (status.state === 'running') {
+      this.buildDetail.textContent = siteJobText(status);
+      this.poll = setTimeout(() => this.pollBuild(), SITE_POLL_MS);
+    } else if (status.state === 'needs_confirmation') {
+      const pct = Math.round((status.verdict?.p_residential ?? 0) * 100);
+      this.buildDetail.textContent = `We couldn’t confirm this is a home (${pct}% likely). Build it anyway?`;
+      this.build.classList.add('paused');
+      this.buildConfirm.hidden = false;
+      this.buildYes.focus({ preventScroll: true });
+    } else if (status.state === 'failed') {
+      this.buildFailed(status.error ?? 'The site could not be built.');
+    } else if (status.state === 'done') {
+      this.jobId = null;
+      this.buildDetail.textContent = 'Preparing the swarm…';
+      try {
+        await this.launch(await reloadScene(), { record: true });
+      } catch (err) {
+        this.buildFailed(errorText(err));
+      }
+    } else {
+      this.buildFailed('The build was cancelled.');
+    }
+  },
+
+  async confirmBuild() {
+    this.buildConfirm.hidden = true;
+    this.build.classList.remove('paused');
+    this.buildDetail.textContent = 'Building the property…';
+    try {
+      await api().confirm_site_build(this.jobId);
+      this.pollBuild();
+    } catch (err) {
+      this.buildFailed(errorText(err));
+    }
+  },
+
+  async abortBuild() {
+    const id = this.jobId;
+    this.buildFailed('');
+    this.address.select();
+    try {
+      await api().cancel_site_build(id);
+    } catch (err) {
+      toast.show(errorText(err));
+    }
+  },
+
+  /** Back to the address question, with the reason under it. */
+  buildFailed(message) {
+    clearTimeout(this.poll);
+    this.jobId = null;
+    this.busy = false;
+    this.show(2);
+    this.setError('address', message);
+  },
+
+  /** Skip: fly the random property already loaded, locally, uploading nothing. */
+  async skipToLocal() {
+    if (this.busy || !sceneDesc) return;
+    this.busy = true;
+    try {
+      await this.launch(sceneDesc, { record: false, drones: this.defaultDrones });
+    } catch (err) {
+      this.busy = false;
+      toast.show(errorText(err));
+    }
+  },
+
+  /** Put the chosen swarm on ``desc``'s property and hand over to the sim. */
+  async launch(desc, { record, drones = this.drones }) {
+    let scene = desc;
+    if (scene.drones !== drones) scene = await reloadScene(await api().set_drone_count(drones));
+    if (record) {
+      const picked = this.combo.picked;
+      capture.begin(scene, this.apiUrl, {
+        name: this.name.value.trim(),
+        email: this.email.value.trim(),
+        address: picked.label,
+        lat: picked.lat_deg,
+        lon: picked.lon_deg,
+      });
+    }
+    this.finish();
+  },
+
+  /** The hand-off: the card lifts away, the scene sharpens, the camera flies
+   *  in, and the HUD fades up as it settles. */
+  finish() {
+    this.isOpen = false;
+    this.el.classList.add('leaving');
+    document.body.classList.remove('intake-open');
+    surveying = true;
+    const ms = reducedMotion ? 1 : INTRO.handOffMs;
+    const revealHud = () => {
+      if (!document.body.classList.contains('chrome-hidden')) return;
+      document.body.classList.remove('chrome-hidden');
+      document.body.classList.add('chrome-reveal');
+      hint.arm(9000);
+    };
+    intro.handOff(ms, revealHud);
+    setTimeout(revealHud, ms * HUD_REVEAL_FRACTION);
+    setTimeout(() => {
+      this.el.hidden = true;
+      this.el.inert = true;
+    }, reducedMotion ? 450 : 1100);
+    canvas.focus({ preventScroll: true });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Site photos (ADR 0017): once the battery sites arrive, one 4:3 "drone
+// photo" per site from a camera standing off the wall, with the property in
+// true colour and every flight overlay hidden, plus the battery, the meter and
+// each nearby detection projected into it as percentage boxes.
+//
+// The pass renders into an HDR target and tone-maps into an 8-bit one itself:
+// three.js applies tone mapping and the sRGB transfer only when drawing to the
+// screen, so a render target alone would come back linear and flat. Nothing
+// here touches the canvas, so the user (and the recording) never see it.
+// ---------------------------------------------------------------------------
+const PHOTO = {
+  width: 1024,
+  height: 768,
+  fov: 50, // vertical, degrees
+  eyeZ: 1.6, // camera height, metres
+  aimZ: 1.1, // height of the point it looks at, metres
+  standOff: [5, 14, 0.5], // first, last and step distance out from the wall, metres
+  marginPct: 4, // battery and meter must sit this far inside the frame
+  maxSites: 4,
+  candidateM: 3, // detections this close (horizontally) to a site are candidates
+  meterMatchM: 1, // a METER detection this close to the site's meter is that meter
+  meterHalfM: 0.2, // half-size of the fallback box around an undetected meter
+  quality: 0.9,
+};
+
+const TONEMAP_FRAG = /* glsl */ `
+  uniform sampler2D src;
+  uniform float exposure;
+  varying vec2 vUv;
+  // Khronos PBR Neutral, as THREE.NeutralToneMapping applies it on screen.
+  vec3 neutral(vec3 color) {
+    const float start = 0.8 - 0.04;
+    const float desaturation = 0.15;
+    color *= exposure;
+    float x = min(color.r, min(color.g, color.b));
+    float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+    color -= offset;
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak < start) return color;
+    float d = 1.0 - start;
+    float newPeak = 1.0 - d * d / (peak + d - start);
+    color *= newPeak / peak;
+    float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+    return mix(color, vec3(newPeak), g);
+  }
+  vec3 toSrgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(pow(c, vec3(1.0 / 2.4)) * 1.055 - 0.055, c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308))));
+  }
+  void main() {
+    gl_FragColor = vec4(toSrgb(neutral(texture2D(src, vUv).rgb)), 1.0);
+  }`;
+
+let photoRig = null;
+
+function getPhotoRig() {
+  if (photoRig) return photoRig;
+  const { width, height } = PHOTO;
+  const hdr = new THREE.WebGLRenderTarget(width, height, { type: THREE.HalfFloatType, samples: 4 });
+  const ldr = new THREE.WebGLRenderTarget(width, height);
+  const quad = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    new THREE.ShaderMaterial({
+      uniforms: { src: { value: hdr.texture }, exposure: { value: renderer.toneMappingExposure } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: TONEMAP_FRAG,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  quad.frustumCulled = false;
+  const post = new THREE.Scene();
+  post.add(quad);
+  // Far enough to take in the sky dome, as the main camera does.
+  const cam = new THREE.PerspectiveCamera(PHOTO.fov, width / height, 0.05, 900);
+  photoRig = { hdr, ldr, post, cam, pixels: new Uint8Array(width * height * 4) };
+  return photoRig;
+}
+
+/** Corners of a Z-up box -- ``center``, ``size`` (length along ``yaw``,
+ *  width, height) -- as three.js points. */
+function boxCorners(center, size, yaw) {
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const out = [];
+  for (const i of [-0.5, 0.5]) {
+    for (const j of [-0.5, 0.5]) {
+      for (const k of [-0.5, 0.5]) {
+        const u = i * size[0];
+        const v = j * size[1];
+        out.push(toThree([center[0] + u * c - v * s, center[1] + u * s + v * c, center[2] + k * size[2]]));
+      }
+    }
+  }
+  return out;
+}
+
+/** The screen rect, in percent of the photo, bounding ``points`` (three.js),
+ *  and how many of them are in front of ``cam``. Unclipped. */
+function projectRect(points, cam) {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  let front = 0;
+  const v = new THREE.Vector3();
+  for (const p of points) {
+    if (v.copy(p).applyMatrix4(cam.matrixWorldInverse).z > -cam.near) continue;
+    front += 1;
+    v.copy(p).project(cam);
+    const x = ((v.x + 1) / 2) * 100;
+    const y = ((1 - v.y) / 2) * 100;
+    x0 = Math.min(x0, x);
+    x1 = Math.max(x1, x);
+    y0 = Math.min(y0, y);
+    y1 = Math.max(y1, y);
+  }
+  return { x0, y0, x1, y1, front, all: front === points.length };
+}
+
+const round1 = (x) => Math.round(x * 10) / 10;
+
+/** A rect as the dashboard's ``Box``, clipped to the photo. */
+function clipBox(r) {
+  const x0 = THREE.MathUtils.clamp(r.x0, 0, 100);
+  const y0 = THREE.MathUtils.clamp(r.y0, 0, 100);
+  const x1 = THREE.MathUtils.clamp(r.x1, 0, 100);
+  const y1 = THREE.MathUtils.clamp(r.y1, 0, 100);
+  return { x: round1(x0), y: round1(y0), width: round1(x1 - x0), height: round1(y1 - y0) };
+}
+
+const insideFrame = (r, m) => r.all && r.x0 >= m && r.y0 >= m && r.x1 <= 100 - m && r.y1 <= 100 - m;
+const overlapsFrame = (r) => r.all && r.x1 > 0 && r.x0 < 100 && r.y1 > 0 && r.y0 < 100;
+const horizontalM = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+/** Stand the photo camera off the wall along its outward normal, aimed
+ *  between battery and meter, backing away until both are in frame. */
+function framePhoto(cam, s, batteryPts, meterPts) {
+  const mid = new THREE.Vector3();
+  for (const p of batteryPts) mid.addScaledVector(p, 0.5 / batteryPts.length);
+  for (const p of meterPts) mid.addScaledVector(p, 0.5 / meterPts.length);
+  // Back to world Z-up for the placement: three (x, y, z) is world (x, -z, y).
+  const aim = [mid.x, -mid.z, PHOTO.aimZ];
+  const n = [Math.cos(s.yaw), Math.sin(s.yaw)];
+  const [first, last, step] = PHOTO.standOff;
+  for (let d = first; d <= last + 1e-6; d += step) {
+    toThree([aim[0] + n[0] * d, aim[1] + n[1] * d, PHOTO.eyeZ], cam.position);
+    cam.lookAt(toThree(aim));
+    cam.updateMatrixWorld();
+    const fits = [batteryPts, meterPts].every((pts) => insideFrame(projectRect(pts, cam), PHOTO.marginPct));
+    if (fits) return;
+  }
+}
+
+/** Every surveyed object painted in its true colours; returns the undo. */
+function paintTrueColour() {
+  const saved = [];
+  for (const obj of property.objects) {
+    if (obj.background) continue;
+    const arr = obj.colorAttr.array;
+    saved.push([obj, arr.slice()]);
+    for (let f = 0; f < obj.count; f++) {
+      const face = obj.trueFace.subarray(f * 3, f * 3 + 3);
+      for (let v = 0; v < 3; v++) arr.set(face, f * 9 + v * 3);
+    }
+    obj.colorAttr.needsUpdate = true;
+  }
+  return () => {
+    for (const [obj, arr] of saved) {
+      obj.colorAttr.array.set(arr);
+      obj.colorAttr.needsUpdate = true;
+    }
+  };
+}
+
+/** Render ``cam``'s view through the tone-mapping pass into a JPEG blob. */
+function shoot(rig) {
+  const { width, height } = PHOTO;
+  renderer.setRenderTarget(rig.hdr);
+  renderer.render(scene, rig.cam);
+  renderer.setRenderTarget(rig.ldr);
+  renderer.render(rig.post, rig.cam);
+  renderer.readRenderTargetPixels(rig.ldr, 0, 0, width, height, rig.pixels);
+  renderer.setRenderTarget(null);
+  const out = document.createElement('canvas');
+  out.width = width;
+  out.height = height;
+  const ctx = out.getContext('2d');
+  const image = ctx.createImageData(width, height);
+  const row = width * 4;
+  // GL rows run bottom-up.
+  for (let y = 0; y < height; y++) {
+    image.data.set(rig.pixels.subarray((height - 1 - y) * row, (height - y) * row), y * row);
+  }
+  ctx.putImageData(image, 0, 0);
+  return new Promise((resolve) => out.toBlob(resolve, 'image/jpeg', PHOTO.quality));
+}
+
+/** One photo per suggested site (best first, at most PHOTO.maxSites), taken
+ *  and fully restored within the current animation frame. Each entry is the
+ *  ADR 0017 photo shape plus ``blob``, a promise of the JPEG (or null). */
+function takeSitePhotos(frame) {
+  const site = frame.site;
+  const items = sites.items.slice(0, PHOTO.maxSites);
+  if (!items.length) return [];
+  const rig = getPhotoRig();
+  const [bw, bd, bh] = site.battery ?? [1.0, 0.3, 1.5];
+
+  const hidden = [];
+  const hide = (o) => {
+    if (o?.visible) {
+      o.visible = false;
+      hidden.push(o);
+    }
+  };
+  for (const child of layout.children) if (child !== sites.group) hide(child);
+  hide(lotLine);
+  const unpaint = paintTrueColour();
+  const photos = [];
+  try {
+    for (const it of items) {
+      const s = it.data;
+      // This site's battery at full size and opacity; everything else of the
+      // site layer (other batteries, outlines, conduits) out of shot.
+      const saved = { scale: it.body.scale.x, opacity: it.skins.map((k) => k.opacity), hidden: [] };
+      const hideHere = (o) => {
+        if (o?.visible) {
+          o.visible = false;
+          saved.hidden.push(o);
+        }
+      };
+      for (const other of sites.items) if (other !== it) hideHere(other.root);
+      hideHere(it.conduit);
+      hideHere(it.outline);
+      it.body.scale.setScalar(1);
+      for (const skin of it.skins) skin.opacity = skin.userData.opacity;
+      it.root.updateMatrixWorld(true);
+
+      try {
+        const batteryPts = batteryKit
+          ? boxCornersFromBounds(batteryKit.bounds, it.body.matrixWorld)
+          : boxCorners(
+              [s.pos[0] + (Math.cos(s.yaw) * bd) / 2, s.pos[1] + (Math.sin(s.yaw) * bd) / 2, bh / 2],
+              [bd, bw, bh],
+              s.yaw,
+            );
+        const meterAt = new THREE.Vector3(...s.meter);
+        const meterDet = frame.detections.find(
+          (d) => d.cls === 'METER' && meterAt.distanceTo(new THREE.Vector3(...d.center)) <= PHOTO.meterMatchM,
+        );
+        const m = PHOTO.meterHalfM * 2;
+        const meterPts = meterDet
+          ? boxCorners(meterDet.center, meterDet.size, meterDet.yaw)
+          : boxCorners(s.meter, [m, m, m], s.yaw);
+
+        framePhoto(rig.cam, s, batteryPts, meterPts);
+        const blob = shoot(rig);
+
+        const candidates = [];
+        for (const d of frame.detections) {
+          const dist = horizontalM(d.center, s.pos);
+          if (dist > PHOTO.candidateM) continue;
+          const r = projectRect(boxCorners(d.center, d.size, d.yaw), rig.cam);
+          if (!overlapsFrame(r)) continue;
+          candidates.push({ trackId: d.id, cls: d.cls, box: clipBox(r), distanceM: Math.round(dist * 100) / 100 });
+        }
+        photos.push({
+          siteRank: s.rank,
+          width: PHOTO.width,
+          height: PHOTO.height,
+          placementBoxes: [
+            { label: 'Battery', box: clipBox(projectRect(batteryPts, rig.cam)) },
+            { label: 'Meter', box: clipBox(projectRect(meterPts, rig.cam)) },
+          ],
+          candidates,
+          blob,
+        });
+      } finally {
+        it.body.scale.setScalar(saved.scale);
+        it.skins.forEach((skin, k) => {
+          skin.opacity = saved.opacity[k];
+        });
+        for (const o of saved.hidden) o.visible = true;
+      }
+    }
+  } finally {
+    for (const o of hidden) o.visible = true;
+    unpaint();
+    renderer.setRenderTarget(null);
+  }
+  return photos;
+}
+
+/** A Box3's eight corners through ``matrix``. */
+function boxCornersFromBounds(box, matrix) {
+  const out = [];
+  for (const x of [box.min.x, box.max.x]) {
+    for (const y of [box.min.y, box.max.y]) {
+      for (const z of [box.min.z, box.max.z]) out.push(new THREE.Vector3(x, y, z).applyMatrix4(matrix));
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Capture and upload (ADR 0017). Only a mission the intake started is
+// captured; a restart, new scene or drone-count change before it finishes
+// abandons the capture rather than upload a spliced run. Order at the end:
+// presign every file, PUT the blobs (a failed video only drops ``videoKey``),
+// then PUT the run record with the photo metadata.
+// ---------------------------------------------------------------------------
+const CAPTURE = { fps: 30, bitrate: 5_000_000, tailMs: 1500, timesliceMs: 1000 };
+const VIDEO_TYPES = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+
+async function fetchJson(url, { method = 'GET', body, timeoutMs = 15000 } = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method,
+      signal: ctl.signal,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const j = await res.json();
+        detail = j.error ?? j.message ?? '';
+      } catch {
+        // not JSON; the status says enough
+      }
+      throw new Error(`${method} ${new URL(url).pathname} returned ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
+    return res.status === 204 ? null : await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const uploadPill = {
+  el: document.getElementById('upload'),
+  text: document.getElementById('upload-text'),
+  retry: document.getElementById('upload-retry'),
+  onRetry: null,
+  timer: 0,
+
+  init() {
+    this.retry.addEventListener('click', () => this.onRetry?.());
+  },
+
+  show(state, text, onRetry = null) {
+    clearTimeout(this.timer);
+    this.el.hidden = false;
+    this.el.dataset.state = state;
+    this.text.textContent = text;
+    this.onRetry = onRetry;
+    this.retry.hidden = !onRetry;
+    if (state === 'done') this.timer = setTimeout(() => (this.el.hidden = true), 6000);
+  },
+};
+
+const capture = {
+  run: null, // { epoch, apiUrl, review, recorder, stopped, chunks, photos, record, video, doneSeen, uploaded, dropped }
+  apiWarned: false,
+
+  /** Start capturing the mission about to fly on ``desc``, and create its review. */
+  begin(desc, apiUrl, person) {
+    const run = {
+      epoch: desc.epoch,
+      apiUrl,
+      review: null,
+      recorder: null,
+      stopped: Promise.resolve(),
+      chunks: [],
+      photos: null,
+      record: null,
+      video: null,
+      doneSeen: false,
+      uploaded: new Map(), // file name -> object key, so a retry skips finished PUTs
+      dropped: false,
+    };
+    this.run = run;
+    const body = {
+      ...person,
+      siteId: desc.location?.site_id || null, // random scenes report ''
+      droneCount: desc.drones,
+      seed: desc.seed,
+    };
+    run.review = fetchJson(`${apiUrl}/reviews`, { method: 'POST', body, timeoutMs: 8000 }).then(
+      (res) => res.id,
+      (err) => {
+        console.warn('review API', err);
+        if (!this.apiWarned) toast.show('Review API unreachable — this run won’t be uploaded');
+        this.apiWarned = true;
+        this.drop(run);
+        return null;
+      },
+    );
+    this.record(run);
+  },
+
+  record(run) {
+    const type = window.MediaRecorder && VIDEO_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
+    if (!type || !canvas.captureStream) return;
+    try {
+      const stream = canvas.captureStream(CAPTURE.fps);
+      const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: CAPTURE.bitrate });
+      rec.addEventListener('dataavailable', (e) => {
+        if (e.data.size && !run.dropped) run.chunks.push(e.data);
+      });
+      run.stopped = new Promise((resolve) => {
+        rec.addEventListener(
+          'stop',
+          () => {
+            for (const track of stream.getTracks()) track.stop();
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      rec.start(CAPTURE.timesliceMs);
+      run.recorder = rec;
+    } catch (err) {
+      console.warn('recording unavailable', err);
+    }
+  },
+
+  stopRecording(run) {
+    if (run.recorder && run.recorder.state !== 'inactive') run.recorder.stop();
+    return run.stopped;
+  },
+
+  /** Stop and forget ``run``: nothing of it is uploaded. */
+  drop(run) {
+    run.dropped = true;
+    run.chunks = [];
+    this.stopRecording(run);
+    if (this.run === run) this.run = null;
+  },
+
+  /** Called by buildScene: a different swarm means this capture is over. */
+  abandon(epoch) {
+    const run = this.run;
+    if (!run || run.epoch === epoch) return;
+    if (run.doneSeen) {
+      // The mission finished; just cut the tail short and let the upload go.
+      this.stopRecording(run);
+      return;
+    }
+    toast.show('Survey restarted — this run won’t be uploaded');
+    this.drop(run);
+  },
+
+  /** Per animation frame, after the sites are built and before drawing. */
+  onFrame(frame) {
+    const run = this.run;
+    if (!run || !frame || frame.epoch !== run.epoch) return;
+    if (run.photos === null && frame.site) {
+      try {
+        run.photos = takeSitePhotos(frame);
+      } catch (err) {
+        console.warn('site photos failed', err);
+        run.photos = [];
+      }
+    }
+    if (frame.phase === 'done' && !run.doneSeen) {
+      run.doneSeen = true;
+      // Asked for now, while the finished mission is still the session's.
+      run.record = Promise.resolve().then(() => api().run_record());
+      run.record.catch(() => {}); // surfaced by upload(), not as an unhandled rejection
+      setTimeout(() => this.finish(run), CAPTURE.tailMs);
+    }
+  },
+
+  async finish(run) {
+    await this.stopRecording(run);
+    if (run.dropped) return;
+    run.video = run.chunks.length ? new Blob(run.chunks, { type: 'video/webm' }) : null;
+    run.chunks = [];
+    this.upload(run);
+  },
+
+  async upload(run) {
+    const reviewId = await run.review;
+    if (!reviewId || run.dropped) return;
+    const base = `${run.apiUrl}/reviews/${encodeURIComponent(reviewId)}`;
+    uploadPill.show('busy', 'Uploading survey…');
+    try {
+      const photos = (
+        await Promise.all((run.photos ?? []).map(async (p) => ({ ...p, jpeg: await p.blob })))
+      ).filter((p) => p.jpeg);
+      const files = photos.map((p) => ({ name: `site-${p.siteRank}.jpg`, contentType: 'image/jpeg', blob: p.jpeg }));
+      if (run.video) files.push({ name: 'run.webm', contentType: 'video/webm', blob: run.video });
+      const todo = files.filter((f) => !run.uploaded.has(f.name));
+      let presigned = new Map();
+      if (todo.length) {
+        const { uploads } = await fetchJson(`${base}/uploads`, {
+          method: 'POST',
+          body: { files: todo.map(({ name, contentType }) => ({ name, contentType })) },
+        });
+        presigned = new Map(uploads.map((u) => [u.name, u]));
+      }
+      let sent = files.length - todo.length;
+      const progress = () => uploadPill.show('busy', `Uploading survey… ${sent}/${files.length}`);
+      progress();
+      const put = async (f) => {
+        if (run.uploaded.has(f.name)) return run.uploaded.get(f.name);
+        const target = presigned.get(f.name);
+        if (!target) throw new Error(`no upload URL for ${f.name}`);
+        const res = await fetch(target.url, { method: 'PUT', body: f.blob, headers: { 'Content-Type': f.contentType } });
+        if (!res.ok) throw new Error(`upload of ${f.name} returned ${res.status}`);
+        run.uploaded.set(f.name, target.key);
+        sent += 1;
+        progress();
+        return target.key;
+      };
+      const video = files.find((f) => f.name === 'run.webm');
+      const videoKey = video
+        ? put(video).catch((err) => {
+            console.warn('video upload failed; sending the run without it', err);
+            return null;
+          })
+        : Promise.resolve(null);
+      const keys = await Promise.all(photos.map((p) => put(files.find((f) => f.name === `site-${p.siteRank}.jpg`))));
+      const record = await run.record;
+      await fetchJson(`${base}/run`, {
+        method: 'PUT',
+        timeoutMs: 60000,
+        body: {
+          record,
+          photos: photos.map((p, i) => ({
+            siteRank: p.siteRank,
+            key: keys[i],
+            width: p.width,
+            height: p.height,
+            placementBoxes: p.placementBoxes,
+            candidates: p.candidates,
+          })),
+          videoKey: await videoKey,
+        },
+      });
+      uploadPill.show('done', 'Sent to dashboard');
+      if (this.run === run) this.run = null;
+    } catch (err) {
+      uploadPill.show('error', `Upload failed: ${errorText(err)}`, () => this.upload(run));
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 const api = () => window.pywebview.api;
@@ -1675,9 +3065,14 @@ let pendingDt = 0;
 let paused = false;
 let inflight = false;
 let last = performance.now();
+/** The scene description buildScene() last applied. */
+let sceneDesc = null;
+/** False until the intake is finished or skipped: until then the mission
+ *  must not advance, so no frame() is asked for at all. */
+let surveying = false;
 
 function requestFrame() {
-  if (inflight || state.epoch < 0) return;
+  if (inflight || state.epoch < 0 || !surveying) return;
   inflight = true;
   const send = pendingDt;
   pendingDt = 0;
@@ -1690,7 +3085,7 @@ function requestFrame() {
       if (frame.epoch !== state.epoch) return;
       latest = frame;
       revealTriangles(decodeI32(frame.revealed));
-      ui.hud.textContent = ui.hudText(frame);
+      ui.showStatus(frame);
     })
     .catch((err) => toast.show(errorText(err)))
     .finally(() => {
@@ -1701,15 +3096,20 @@ function requestFrame() {
 function tick(now) {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
-  // The camera always runs on wall time; only the simulation freezes.
+  // The camera always runs on wall time; only the simulation freezes. Before
+  // the survey starts nothing accrues, so it opens at t = 0.
   const simDt = paused ? 0 : dt;
-  pendingDt += simDt;
+  pendingDt = surveying ? pendingDt + simDt : 0;
   requestFrame();
-  fly.update(dt);
+  if (intro.active) intro.update(dt);
+  else fly.update(dt);
   updateDrones(latest, simDt, now);
   updateFrontiers(latest);
   updateDetections(latest);
   updateSites(latest, now);
+  // After the sites are built (their batteries appear in the photos) and
+  // before the frame is drawn, so the photo pass never reaches the screen.
+  capture.onFrame(latest);
   updatePads(now);
   renderer.render(scene, camera);
   requestAnimationFrame(tick);
@@ -1727,18 +3127,22 @@ async function start() {
   started = true;
   ui.init();
   carousel.init();
+  addressPanel.init();
   try {
     droneKit = makeDroneKit(await api().drone_model());
     batteryKit = makeBatteryKit(await api().battery_model());
     const desc = await api().scene();
     await ui.syncWorld(desc);
     buildScene(desc);
+    await intake.configure(desc);
   } catch (err) {
     toast.show(errorText(err));
   }
   canvas.classList.add('ready');
-  canvas.focus();
 }
+
+intake.init();
+uploadPill.init();
 
 if (window.pywebview?.api) start();
 else window.addEventListener('pywebviewready', start);

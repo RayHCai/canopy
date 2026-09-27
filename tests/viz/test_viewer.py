@@ -20,7 +20,13 @@ from canopy.config import Config
 from canopy.contracts import Cls
 from canopy.errors import ConfigError, SimulationError
 from canopy.site import load_site_rules
-from canopy.viz.viewer import MAX_TIME_SCALE, MIN_TIME_SCALE, ViewerSession, battery_model
+from canopy.viz.models import battery_model
+from canopy.viz.session import (
+    MAX_TIME_SCALE,
+    MIN_DRONES,
+    MIN_TIME_SCALE,
+    ViewerSession,
+)
 
 
 @pytest.fixture(scope="module")
@@ -282,12 +288,12 @@ def test_detections_match_documented_shape_and_configured_colours(
 ) -> None:
     """Every frame's detections match the documented shape, and colours match the viewer config.
 
-    Seed 1 with 3 drones (the same scene the module ``session`` fixture uses)
-    reliably gets a drone close enough to the house that a METER is classified
-    within a few seconds of simulated time; running to 25 s leaves ample
-    margin and matches what a real, un-started viewer session would show.
+    Seed 4 with 3 drones classifies its METER about 8 s into the mission.
+    Time to the meter varies a lot between scenes (seed 1 takes ~30 s), so
+    this pins a scene where it comes early; running to 15 s leaves margin
+    without flying a whole mission.
     """
-    session = ViewerSession(cfg, drones=3, seed=1, scene_dir=tmp_path)
+    session = ViewerSession(cfg, drones=3, seed=4, scene_dir=tmp_path)
     expected_keys = {"id", "cls", "color", "center", "size", "yaw", "confidence"}
     color_by_cls = {c.cls: [v / 255.0 for v in c.rgb] for c in cfg.viewer.detection_colors}
     default_color = [v / 255.0 for v in cfg.viewer.detection_default_rgb]
@@ -295,7 +301,7 @@ def test_detections_match_documented_shape_and_configured_colours(
     dt = cfg.sim.dt
     seen_classes: set[str] = set()
     frame = session.advance(dt)
-    for _ in range(round(25.0 / dt) - 1):
+    for _ in range(round(15.0 / dt) - 1):
         frame = session.advance(dt)
         detections = frame["detections"]
         assert isinstance(detections, list)
@@ -317,7 +323,7 @@ def test_detections_match_documented_shape_and_configured_colours(
             assert det["color"] == pytest.approx(expected_color)
             seen_classes.add(det["cls"])
 
-    assert seen_classes, "no object was ever classified in 25 s of simulated time"
+    assert seen_classes, "no object was ever classified in 15 s of simulated time"
     assert "METER" in seen_classes
     final_meters = [d for d in frame["detections"] if d["cls"] == "METER"]
     assert final_meters, "no METER detection survived to the final frame"
@@ -337,7 +343,7 @@ def test_battery_model_bounding_box_contains_rules_yaml() -> None:
     """The battery mesh's bounding box must contain ``rules.yaml`` battery, in the site frame.
 
     +X out of the wall (front), the back on the wall (x = 0), width centred on
-    ``y = 0`` -- see :func:`canopy.viz.viewer.battery_model`. ``rules.yaml``
+    ``y = 0`` -- see :func:`canopy.viz.models.battery_model`. ``rules.yaml``
     battery is the checklist's judged clearance box (real product dimensions);
     the OBJ deliberately stays larger -- 0.93 x 0.58 x 1.0 m, including a
     side-mounted disconnect the checklist box excludes -- and ADR 0013 records
@@ -405,3 +411,111 @@ def test_a_completed_mission_yields_json_safe_battery_sites(cfg: Config, tmp_pat
             assert value is None or (isinstance(value, float) and np.isfinite(value))
 
     json.dumps(frame)  # the whole frame must round-trip through JSON
+
+
+def test_frames_carry_a_mapping_estimate(session: ViewerSession) -> None:
+    session.restart()
+    mapping = session.advance(0.01)["mapping"]
+    # Straight after launch there is no frontier trend to project yet.
+    assert mapping == {"remaining_s": None, "done_at_s": None}
+    json.dumps(mapping)
+
+
+# -- run_record() / intake() (ADR 0017) --------------------------------------
+
+_EVENT_TYPES = {"capture", "low_battery", "failure", "complete"}
+_EVENT_STATUSES = {"Flying", "Idle", "Failed"}
+#: ViewerSession._TRACK_PERIOD_S, duplicated rather than imported since it is
+#: a private implementation constant, not part of the module's public API.
+_TRACK_PERIOD_S = 0.5
+
+
+def test_run_record_has_one_sample_per_drone_right_after_construction(
+    cfg: Config, tmp_path: Path
+) -> None:
+    session = ViewerSession(cfg, drones=3, seed=11, scene_dir=tmp_path)
+    record = session.run_record()
+
+    assert record["drones"] == 3
+    assert record["seed"] == session.seed
+    assert record["phase"] == "takeoff"
+    assert len(record["tracks"]) == 3
+    for track in record["tracks"]:
+        assert len(track["samples"]) == 1
+        t, x, y, z, yaw, battery = track["samples"][0]
+        assert t == pytest.approx(0.0)
+        assert isinstance(x, float)
+        assert isinstance(y, float)
+        assert isinstance(z, float)
+        assert isinstance(yaw, float)
+        assert battery == pytest.approx(1.0)
+        assert track["alive"] is True
+    # Nothing has flown yet, so nothing has changed task or crossed a health line.
+    for event in record["events"]:
+        assert event["type"] in _EVENT_TYPES
+
+
+@pytest.mark.slow
+def test_run_record_samples_roughly_every_half_second_and_events_are_well_formed(
+    cfg: Config, tmp_path: Path
+) -> None:
+    session = ViewerSession(cfg, drones=1, seed=12, scene_dir=tmp_path)
+    dt = cfg.sim.dt
+    for _ in range(round(3.0 / dt)):
+        session.advance(dt)
+    record = session.run_record()
+
+    samples = record["tracks"][0]["samples"]
+    assert len(samples) >= 5
+    # The very first sample is the pre-tick seed at t=0; every gap after it
+    # should be one _TRACK_PERIOD_S, up to a control tick's worth of slop.
+    for (t_a, *_), (t_b, *_) in itertools.pairwise(samples[1:]):
+        assert t_b - t_a == pytest.approx(_TRACK_PERIOD_S, abs=dt)
+
+    for event in record["events"]:
+        assert event["type"] in _EVENT_TYPES
+        assert event["status"] in _EVENT_STATUSES
+        assert isinstance(event["message"], str)
+        assert event["message"]
+        assert isinstance(event["task"], str)
+        assert event["task"]
+        assert isinstance(event["battery_pct"], int)
+        assert 0 <= event["battery_pct"] <= 100
+        assert isinstance(event["drone_id"], int)
+        assert isinstance(event["t"], float)
+
+
+@pytest.mark.slow
+def test_restart_clears_the_recorded_run(cfg: Config, tmp_path: Path) -> None:
+    session = ViewerSession(cfg, drones=2, seed=13, scene_dir=tmp_path)
+    dt = cfg.sim.dt
+    for _ in range(round(2.0 / dt)):
+        session.advance(dt)
+    before = session.run_record()
+    assert len(before["tracks"][0]["samples"]) > 1
+
+    session.restart()
+    after = session.run_record()
+
+    assert after["events"] == []
+    assert after["sim_time_s"] == pytest.approx(0.0)
+    for track in after["tracks"]:
+        assert len(track["samples"]) == 1
+
+
+def test_run_record_is_json_safe(cfg: Config, tmp_path: Path) -> None:
+    """``json.dumps(..., allow_nan=False)`` must never choke on a run record."""
+    session = ViewerSession(cfg, drones=1, seed=14, scene_dir=tmp_path)
+    for _ in range(10):
+        session.advance(cfg.sim.dt)
+    json.dumps(session.run_record(), allow_nan=False)
+
+
+def test_intake_reports_the_configured_review_api_url(cfg: Config, tmp_path: Path) -> None:
+    session = ViewerSession(cfg, drones=2, seed=15, scene_dir=tmp_path)
+    assert session.intake() == {
+        "api_url": cfg.viewer.review_api_url,
+        "drones": 2,
+        "max_drones": cfg.viewer.max_drones,
+        "min_drones": MIN_DRONES,
+    }

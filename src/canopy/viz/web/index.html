@@ -6,66 +6,74 @@
   <title>Canopy</title>
   <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="intake-open chrome-hidden">
   <canvas id="scene" tabindex="0" aria-label="Canopy simulation"></canvas>
 
-  <div id="hud" class="hud" role="status" aria-live="polite"></div>
+  <!-- Mission status: phase, time left until mapping ends, coverage. Only the
+       phase is a live region; the numbers change every frame. -->
+  <section id="eta" class="status" aria-label="Mission status" hidden>
+    <div class="status-head">
+      <span id="eta-phase" class="status-phase" role="status" aria-live="polite"></span>
+      <span id="eta-elapsed" class="status-clock"></span>
+    </div>
+    <div id="eta-value" class="status-value"></div>
+    <div class="status-bar"><div id="eta-fill" class="status-fill"></div></div>
+    <div id="hud" class="status-foot"></div>
+  </section>
 
   <div id="hint" class="hint" aria-hidden="true">
     <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
-    <span><kbd>Q</kbd><kbd>E</kbd> down / up</span>
-    <span>drag to look</span>
-    <span>scroll to zoom</span>
+    <span><kbd>Q</kbd><kbd>E</kbd> height</span>
+    <span>drag look</span>
+    <span>scroll zoom</span>
   </div>
 
-  <button id="restart" class="restart" type="button" aria-label="Restart from the beginning">
-    <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none"
-         stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v5h5"/>
-    </svg>
-  </button>
+  <div class="toolbar" role="toolbar" aria-label="Simulation controls">
+    <button id="restart" class="tool restart" type="button" aria-label="Restart from the beginning"
+            title="Restart">
+      <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none"
+           stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 12a8 8 0 1 0 2.3-5.7M4 4v5h5"/>
+      </svg>
+    </button>
 
-  <button id="playpause" class="playpause" type="button" aria-label="Pause"
-          aria-pressed="false">
-    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-      <path class="bar bar-l"/>
-      <path class="bar bar-r"/>
-    </svg>
-  </button>
+    <button id="playpause" class="tool playpause" type="button" aria-label="Pause"
+            aria-pressed="false" title="Pause / resume">
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+        <path class="bar bar-l"/>
+        <path class="bar bar-r"/>
+      </svg>
+    </button>
 
-  <button id="gear" class="gear" type="button" aria-label="Settings"
-          aria-controls="settings" aria-expanded="false">
-    <!-- Two glyphs stacked in one button; CSS morphs one into the other. -->
-    <svg class="icon icon-gear" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"
-         fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-      <circle cx="12" cy="12" r="3"/>
-    </svg>
-    <svg class="icon icon-close" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"
-         fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-      <path d="M6 6l12 12M18 6L6 18"/>
-    </svg>
-  </button>
+    <span class="tool-sep" aria-hidden="true"></span>
+
+    <button id="gear" class="tool gear" type="button" aria-label="Settings"
+            aria-controls="settings" aria-expanded="false" title="Settings">
+      <!-- Two glyphs stacked in one button; CSS cross-fades one into the other. -->
+      <svg class="icon icon-gear" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/>
+        <circle cx="16" cy="6" r="2"/>
+        <circle cx="10" cy="12" r="2"/>
+        <circle cx="18" cy="18" r="2"/>
+      </svg>
+      <svg class="icon icon-close" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"
+           fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+        <path d="M6 6l12 12M18 6L6 18"/>
+      </svg>
+    </button>
+  </div>
 
   <aside id="settings" class="panel" aria-label="Settings" aria-hidden="true" inert>
-    <header class="panel-head">
-      <h1>Settings</h1>
-    </header>
-
     <section class="group">
-      <h2>Swarm</h2>
+      <h2>Simulation</h2>
       <div class="field">
         <div class="field-row">
           <label for="drones">Drones</label>
           <output id="drones-out" for="drones" class="count">3</output>
         </div>
         <input id="drones" type="range" min="1" max="5" step="1" value="3">
-        <div class="ticks" id="drone-ticks" aria-hidden="true"></div>
       </div>
-    </section>
-
-    <section class="group">
-      <h2>Simulation</h2>
       <div class="field">
         <div class="field-row">
           <label for="speed">Time speed</label>
@@ -74,7 +82,6 @@
         <!-- Logarithmic: the slider position is the exponent, so 0.5x-1x and
              1x-2x get equal halves of the track and 1x sits in the middle. -->
         <input id="speed" type="range" min="0" max="1000" step="1" value="500">
-        <div class="ticks log-ticks" id="speed-ticks" aria-hidden="true"></div>
       </div>
     </section>
 
@@ -104,49 +111,193 @@
 
     <section class="group">
       <h2>Scene</h2>
-      <button id="new-scene" class="action" type="button">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-            stroke-linejoin="round" d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>
-        </svg>
-        <span>New random scene</span>
-      </button>
+      <div class="seg" role="radiogroup" aria-label="Location">
+        <button type="button" id="loc-mode-random" class="seg-btn" aria-pressed="true">Random</button>
+        <button type="button" id="loc-mode-address" class="seg-btn" aria-pressed="false">Address</button>
+      </div>
+
+      <div id="loc-random">
+        <button id="new-scene" class="action" type="button">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+              stroke-linejoin="round" d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>
+          </svg>
+          <span>New scene</span>
+        </button>
+      </div>
+
+      <div id="loc-address" hidden>
+        <div class="field combobox">
+          <label for="loc-address-input" class="sr-only">Street address</label>
+          <input id="loc-address-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Search an address"
+                 role="combobox" aria-autocomplete="list" aria-expanded="false"
+                 aria-controls="loc-address-listbox" aria-activedescendant="">
+          <ul id="loc-address-listbox" class="combobox-list" role="listbox" hidden></ul>
+        </div>
+        <button id="loc-build" class="action primary" type="button" disabled>
+          <span>Build site</span>
+        </button>
+
+        <div id="loc-progress" class="loc-progress" hidden role="status" aria-live="polite">
+          <span class="spin-dot" aria-hidden="true"></span>
+          <span id="loc-stage-text"></span>
+        </div>
+
+        <div id="loc-confirm" class="loc-confirm" hidden role="status" aria-live="polite">
+          <p id="loc-confirm-text"></p>
+          <div class="field-row">
+            <button id="loc-confirm-yes" class="action primary" type="button">Build anyway</button>
+            <button id="loc-confirm-no" class="action" type="button">Cancel</button>
+          </div>
+        </div>
+
+        <div id="loc-card" class="loc-card" hidden>
+          <div class="loc-card-head">
+            <span id="loc-card-label" class="loc-card-label"></span>
+            <span id="loc-card-verdict" class="loc-card-verdict"></span>
+          </div>
+          <dl class="loc-card-facts">
+            <dt>Observed</dt><dd id="loc-card-observed"></dd>
+            <dt>Inferred</dt><dd id="loc-card-inferred"></dd>
+          </dl>
+          <ul id="loc-card-notes" class="loc-card-notes"></ul>
+          <p id="loc-card-attribution" class="loc-card-attribution"></p>
+          <button id="loc-new-seed" class="action" type="button">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+              <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                stroke-linejoin="round" d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>
+            </svg>
+            <span>New seed</span>
+          </button>
+        </div>
+      </div>
     </section>
   </aside>
 
-  <!-- Suggested battery sites, shown once mapping is complete. -->
+  <!-- Suggested battery sites, shown once mapping is complete: the overall
+       call and the site pager on one bar, the current site below it. -->
   <section id="sites" class="sites" aria-label="Suggested battery sites" hidden>
-    <div id="site-summary" class="site-summary" aria-live="polite">
-      <span id="site-summary-verdict" class="site-summary-verdict"></span>
-      <p id="site-summary-text" class="site-summary-text"></p>
-    </div>
+    <header class="site-bar">
+      <span class="site-overall">
+        Overall <span id="site-summary-verdict" class="tag" aria-live="polite"></span>
+      </span>
+      <nav class="site-nav" aria-label="Browse battery sites">
+        <button id="site-prev" class="site-btn" type="button" aria-label="Previous site">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 5l-7 7 7 7"/>
+          </svg>
+        </button>
+        <span id="site-count" class="site-count" aria-live="polite"></span>
+        <button id="site-next" class="site-btn" type="button" aria-label="Next site">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </nav>
+    </header>
     <div id="site-card" class="site-card" aria-live="polite">
       <div class="site-head">
         <span class="site-swatch" aria-hidden="true"></span>
         <span id="site-title" class="site-title"></span>
-        <span id="site-verdict" class="site-verdict"></span>
+        <span id="site-verdict" class="tag"></span>
         <span id="site-meta" class="site-meta"></span>
       </div>
       <ul id="site-warnings" class="site-warnings"></ul>
     </div>
-    <nav class="site-nav" aria-label="Browse battery sites">
-      <button id="site-prev" class="site-btn" type="button" aria-label="Previous site">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none"
-             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M15 5l-7 7 7 7"/>
-        </svg>
-      </button>
-      <span id="site-count" class="site-count" aria-live="polite"></span>
-      <button id="site-next" class="site-btn" type="button" aria-label="Next site">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none"
-             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M9 5l7 7-7 7"/>
-        </svg>
-      </button>
-    </nav>
   </section>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- Upload of a finished survey to the review API (ADR 0017). -->
+  <div id="upload" class="upload" role="status" aria-live="polite" hidden>
+    <span class="upload-icon" aria-hidden="true"></span>
+    <span id="upload-text" class="upload-text"></span>
+    <button id="upload-retry" class="upload-retry" type="button" hidden>Retry</button>
+  </div>
+
+  <!-- Intake (ADR 0017): four questions, one per page, over the idle scene.
+       Nothing is simulated until it is finished or skipped. -->
+  <section id="intake" class="intake" aria-label="Start a survey">
+    <p id="intake-live" class="sr-only" aria-live="polite"></p>
+
+    <div class="intake-stage">
+      <form id="intake-form" class="q-deck" novalidate>
+        <!-- Filled in by staff on a member's behalf, so every question is about
+             the member, never "you". -->
+        <section class="q" data-step="0" aria-labelledby="q-name-label">
+          <label id="q-name-label" class="q-title" for="q-name">What's the member's name?</label>
+          <input id="q-name" class="q-input" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Full name" aria-describedby="q-name-error">
+          <p id="q-name-error" class="q-error" aria-live="polite"></p>
+        </section>
+
+        <section class="q" data-step="1" aria-labelledby="q-email-label">
+          <label id="q-email-label" class="q-title" for="q-email">What's their email?</label>
+          <input id="q-email" class="q-input" type="email" autocomplete="off" spellcheck="false"
+                 inputmode="email" placeholder="member@example.com" aria-describedby="q-email-error">
+          <p id="q-email-error" class="q-error" aria-live="polite"></p>
+        </section>
+
+        <section class="q" data-step="2" aria-labelledby="q-address-label">
+          <label id="q-address-label" class="q-title" for="q-address">Where's their home?</label>
+          <div class="combobox q-combobox">
+            <input id="q-address" class="q-input" type="text" autocomplete="off" spellcheck="false"
+                   placeholder="Start typing the address"
+                   role="combobox" aria-autocomplete="list" aria-expanded="false"
+                   aria-controls="q-address-listbox" aria-activedescendant=""
+                   aria-describedby="q-address-error">
+            <ul id="q-address-listbox" class="combobox-list" role="listbox" hidden></ul>
+          </div>
+          <p id="q-address-error" class="q-error" aria-live="polite"></p>
+        </section>
+
+        <section class="q" data-step="3" aria-labelledby="q-drones-label">
+          <h2 id="q-drones-label" class="q-title">How many drones?</h2>
+          <div id="q-drones" class="q-seg" role="radiogroup" aria-labelledby="q-drones-label"></div>
+          <p class="q-note">Optional. More drones map the home faster.</p>
+        </section>
+
+        <!-- Shown in place of the questions while the address is fetched and built. -->
+        <section id="q-build" class="q q-build" data-step="build" aria-labelledby="q-build-title">
+          <span class="q-orbit" aria-hidden="true"></span>
+          <h2 id="q-build-title" class="q-title q-title-sm"></h2>
+          <p id="q-build-detail" class="q-detail" role="status" aria-live="polite"></p>
+          <div id="q-build-confirm" class="q-confirm" hidden>
+            <button id="q-build-yes" class="q-start" type="button">Build anyway</button>
+            <button id="q-build-no" class="q-ghost" type="button">Choose another address</button>
+          </div>
+        </section>
+      </form>
+    </div>
+
+    <nav class="intake-nav" aria-label="Survey questions">
+      <button id="intake-back" class="intake-arrow" type="button" aria-label="Previous question">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 12H5M11 6l-6 6 6 6"/>
+        </svg>
+      </button>
+      <ol id="intake-dots" class="intake-dots" aria-hidden="true">
+        <li></li><li></li><li></li><li></li>
+      </ol>
+      <!-- On the last question this arrow grows into the Start survey pill. -->
+      <button id="intake-next" class="intake-arrow" type="button" aria-label="Next question">
+        <span class="intake-next-label" aria-hidden="true">Start survey</span>
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14M13 6l6 6-6 6"/>
+        </svg>
+      </button>
+    </nav>
+
+    <button id="intake-skip" class="intake-skip" type="button"
+            title="Fly a random property locally. Nothing is saved or uploaded.">
+      Skip to demo
+    </button>
+  </section>
 
   <script type="module" src="app.js"></script>
 </body>
