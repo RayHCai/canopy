@@ -27,7 +27,6 @@ _STAGES = [
     "mapping",
     "planning",
     "site",
-    "report",
     "viz",
     "cli",
 ]
@@ -224,3 +223,44 @@ def test_facade_all_is_sorted_and_importable(stage: str) -> None:
     assert all_names == sorted(all_names), f"canopy.{stage}.__all__ is not sorted: {all_names}"
     missing = [name for name in all_names if not hasattr(module, name)]
     assert missing == [], f"canopy.{stage}.__all__ names not importable from the facade: {missing}"
+
+
+#: Standard-library and third-party network clients: the network boundary itself.
+_NETWORK_MODULES = {"urllib", "http", "socket", "ssl", "requests", "httpx"}
+
+
+def _network_import_names(node: ast.AST) -> list[str]:
+    """Top-level module names a single import statement names, if any."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    if isinstance(node, ast.ImportFrom) and node.module is not None:
+        return [node.module]
+    return []
+
+
+def test_only_geo_imports_network_modules() -> None:
+    """No module outside ``canopy.worldgen.geo`` may import an HTTP or socket library.
+
+    That package is the one place in Canopy allowed to touch the network (see
+    its module docstring); everything else reaches real-world site data only
+    through the :class:`~canopy.contracts.SiteSnapshot` that package produces.
+    """
+    violations: list[str] = []
+    for path in _all_source_files():
+        module = _module_name_for(path)
+        if module == "canopy.worldgen.geo" or module.startswith("canopy.worldgen.geo."):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            # Narrowing to the two statement types _network_import_names
+            # actually handles (rather than the bare ast.AST ast.walk yields)
+            # is what gives ``node.lineno`` a non-Optional int: every ``stmt``
+            # subclass carries it, but ``AST`` itself does not.
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            violations.extend(
+                f"{path.relative_to(_SRC_ROOT)}:{node.lineno} -> {name}"
+                for name in _network_import_names(node)
+                if name.split(".")[0] in _NETWORK_MODULES
+            )
+    assert violations == [], "network import outside canopy.worldgen.geo:\n" + "\n".join(violations)

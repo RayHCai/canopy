@@ -11,9 +11,11 @@ __all__ = [
     "CanopyError",
     "ConfigError",
     "DependencyMissingError",
+    "GeodataError",
     "PlanningError",
     "SimulationError",
     "SiteError",
+    "SiteRejectedError",
     "WorldgenError",
 ]
 
@@ -63,4 +65,24 @@ class AssetError(WorldgenError):
     A subclass of :class:`WorldgenError` because every asset lookup happens
     during generation: a caller that only wants "the field could not be built"
     need not know the model database exists.
+    """
+
+
+class GeodataError(WorldgenError):
+    """Real-world data for an address could not be fetched or made sense of.
+
+    The network failed, a provider refused or returned something unreadable, or
+    no building was mapped at the address. Expected in normal use -- public
+    geodata services are best-effort -- so a caller reports it and lets the
+    user try again rather than aborting.
+    """
+
+
+class SiteRejectedError(WorldgenError):
+    """An address resolved, but it is not a property the generator should or can build.
+
+    Raised for an address the residential check rejects, a house outside what
+    the generator can represent (too big, too many storeys, too irregular a
+    footprint), or a house with no wall that will take a meter. The message
+    names the value that failed and the setting it failed against.
     """
