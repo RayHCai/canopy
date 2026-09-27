@@ -16,7 +16,7 @@ Layout:
 | --- | --- |
 | `src/canopy/contracts.py` | Every cross-module data type. An interface, not an implementation detail. |
 | `src/canopy/errors.py` | The deliberate-failure exception hierarchy. |
-| `src/canopy/{worldgen,sim,perception,mapping,planning,site,report,viz}/` | The pipeline stages, in dependency order. |
+| `src/canopy/{worldgen,sim,perception,mapping,planning,site,viz}/` | The pipeline stages, in dependency order. |
 | `src/canopy/cli/` | Entry points (`canopy-fly`). No loose scripts. |
 | `docs/adr/` | Architecture decision records. |
 

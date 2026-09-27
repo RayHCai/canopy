@@ -11,10 +11,11 @@ Goals (in priority order)
 Non-goals. Real drone hardware, photogrammetry, flight-dynamics fidelity, production-grade detection accuracy, the full photo-review SSR (meter class, meter number, panel layout). Battery placement does encode the real Battery Space checklist where the simulated world can express it (ADR 0013).
 Key architecture decisions (do not revisit without cause)
 • Classical planning is the critical path: frontier exploration, Hungarian assignment, grid path planning, and a safety shield. RL is optional and shielded.
-• Sensing is ray casting (Open3D RaycastingScene) against the scene meshes, not a rendered camera. Each ray returns distance, object ID and triangle ID, so semantics are free.
+• Sensing is ray casting (Open3D RaycastingScene) against the scene meshes, not a rendered camera. Each ray returns distance, colour, object ID and triangle ID, but the IDs are ground truth: they feed only the coverage score and the viewer's reveal. The swarm is handed what a real drone would have -- range, direction, colour, its own pose, its launch pads and the operator's flight envelope -- and infers everything else, the house and its extent included (ADR 0016).
 • The motion model is kinematic only (see ADR 0006).
 • Battery placement is a constrained optimization over a 2D cost map, not a classifier. Only the meter uses a detector, and only as a stretch goal.
 • One scene manifest is the single source of truth for sensing and visualization.
+• A property can also be rebuilt from a real street address: open map data is fetched once into a frozen snapshot (the only network access in Canopy), the model library fills in what the data cannot see, and a snapshot plus a seed still gives byte-identical meshes (ADR 0015).
 • The product output is the SSR packet; the 3D map is the means.
 Tech stack and environment
 Python 3.10 in a conda-forge environment; the same environment.yml works on Windows, macOS (Apple Silicon) and Linux. Primary dev machine is Windows.
@@ -103,7 +104,7 @@ canopy/
     site/
       costmap.py          # 2D grid layers
       solver.py           # candidates, scoring, conduit, bush removal
-    report/
+    report/             # retired: see docs/adr/0018 (packet moved to viewer + API, ADR 0017)
       photos.py           # SSR shot list and viewpoint computation
       packet.py           # JSON + HTML (Jinja2), site plan PNG
       templates/packet.html.j2
@@ -183,8 +184,9 @@ class MapState:
     occ: np.ndarray             # (X,Y,Z) uint8: 0 UNKNOWN, 1 FREE, 2 OCC
     origin: np.ndarray          # world pos of voxel (0,0,0)
     voxel: float
-    tri_seen: np.ndarray        # (T,) bool
     discovered: dict[int, DiscoveredObject] = field(default_factory=dict)
+    surface_seen: np.ndarray | None    # (X,Y,Z) bool: photo-quality voxels, judged from the scans
+    survey_bounds: np.ndarray | None   # [[xmin,ymin],[xmax,ymax]]: inferred house + margin
 
 @dataclass
 class DroneTask:
@@ -268,6 +270,13 @@ TREE
 FENCE
 160, 130, 100
 Outputs. out/scenes/<seed>/manifest.json (numpy arrays as lists) + meshes/<obj_id>_<cls>.obj. Add a load_manifest(path) helper. Same seed must produce byte-identical files.
+Address-seeded sites (ADR 0015)
+generate_field(seed, cfg, site=snapshot) rebuilds a real property instead of a random one. The address step runs once and is the only network access: suggest_addresses (Geoapify when an API key is set, else Photon) as the user types, then fetch_site (one Overpass query) freezes the result into a SiteSnapshot under out/sites/<site_id>/, which later builds read offline.
+• Evidence, not a second builder: the mapped footprint (fitted as 1 to 3 axis-aligned masses), storeys, roof shape, mapped trees, neighbour footprints, street and inferred lot pin those parameters; every other role samples as above. A new seed re-rolls only the inferred parts.
+• The world frame is turned so the house's street faces -y, which every placement rule assumes; SceneManifest.north_rad says where true north is.
+• Residential gate: additive log-odds over mapped evidence (building type, shops or offices inside, land use, size, storeys), with accept / ask / reject bands. An envelope check refuses houses over 2 storeys, over 400 m², or too irregular for three blocks to fit.
+• Invariants, checked as each role is placed and repaired by redrawing with relaxed corner clearance: exactly one meter, on an exterior wall not shared with a neighbour, centre 1.3 to 1.7 m above grade, clear of the wall's ends, with 0.9 m working space in front. Room for the INSPECT close-up (2.1 m clear) is reported in SceneManifest.notes, never repaired.
+• Every SceneObject records its provenance: observed, inferred or repaired. On an address-built property the meter is always inferred.
 Module 2: Sim + sensors
 SimWorld owns time, drone states, dynamics and sensors; it runs at a fixed 20 Hz control tick with sensing at 5 Hz, faster than real time when --no-viz.
 Scene loading. Load every OBJ into an Open3D o3d.t.geometry.RaycastingScene via add_triangles, in manifest order, so the returned geometry id equals obj_id. Build obj_tri_offset for global triangle ids.
@@ -300,17 +309,22 @@ class SimWorld:
 Module 3: Mapper
 Mapper.integrate(scan) -> None fuses every scan into one shared MapState: occupancy for planning, triangle coverage for the reveal and metrics, discovered objects for the site solver.
 Occupancy grid
-• Voxel 0.25 m over lot bounds x height 0 to 12 m: 120 x 160 x 48 = 921,600 voxels, uint8.
+• Voxel 0.25 m over the operator's envelope (safety.envelope_x_m / envelope_y_m around the launch pads, 50 x 44 m by default) x height 0 to 12 m: 200 x 176 x 48 voxels, uint8. The swarm is never given the lot.
 • Per scan, fully vectorized numpy (no Python loops over rays):
     1. Subsample to every 2nd ray for free-space carving (5,400 rays).
     2. Sample points along each ray at 0.2 m steps up to min(dist, 12) - 0.3 and mark voxels FREE, but never downgrade OCC to FREE.
     3. Mark voxel of each hit point OCC.
 • Keep an occ_changed flag so frontier extraction only reruns when the map changed.
-Coverage
+Surface inspection (the swarm's view)
+• A return counts as photo-quality under 8 m and 70 degrees incidence. The normal is estimated from the scan's own range image (central differences across neighbouring rays), never read from the mesh; the voxel it lands in is marked surface_seen.
+• Occupied, exposed voxels not yet surface_seen become inspection targets.
+House and survey region (the swarm's view)
+• Plan columns that fill 1.5 to 2.8 m are wall; a connected run of at least 4 m is a building; the building nearest the launch pads is the house. The survey region is its plan box plus 6 m; frontiers, inspection targets and reported objects outside it are ignored. Re-inferred as the map grows.
+Coverage score (ground truth, never read by the swarm)
 • tri_seen[scan.tri_ids[scan.tri_ids >= 0]] = True, but only for hits with range under 8 m and incidence angle under 70 degrees (photo-quality rule).
 • Precompute per-triangle area and centroid z. Metrics:
     ◦ coverage_total = seen area / total area of non-ground triangles.
-    ◦ coverage_ground_band = seen area / total area of WALL, DOOR, METER, BUSH triangles with centroid z in 0 to 2.5 m. This is the mission completion metric.
+    ◦ coverage_ground_band = seen area / total area of WALL, DOOR, METER, BUSH triangles with centroid z in 0 to 2.5 m. This is the mission score.
 Semantics
 • Accumulate per obj_id hit count and running mean hit position.
 • An object becomes a DiscoveredObject when hits reach min_hits (default 30).
@@ -335,7 +349,7 @@ ORBIT
 • Rings at altitudes {2.0, 4.5, 8.0} m; drone i gets ring i % 3 and a start angle offset of 2π i / n.
 • One lap per drone, 24 waypoints per ring, camera look-at = c. Waypoints that are not FREE or UNKNOWN-safe (see shield) are skipped.
 FRONTIER
-• Frontier voxel = FREE with at least one 6-neighbor UNKNOWN, inside the geofence, z in 1.0 to 10 m. Compute with array shifts, no loops.
+• Frontier voxel = FREE with at least one 6-neighbor UNKNOWN, inside the geofence and the survey region, z in 1.0 to 10 m. Compute with array shifts, no loops.
 • Cluster with scipy.ndimage.label (26-connectivity); drop clusters under 8 voxels.
 • Viewpoint per cluster: the FREE voxel within 1.5 to 3 m of the cluster centroid that maximizes unknown voxels in a 3 m sphere; look-at = cluster centroid. Weight clusters with centroid z < 2.5 m by 2x (ground band matters most).
 • Assignment: cost[d, f] = euclidean(d, f) - λ * gain[f] + 5.0 * [f within 3 m of another drone's current goal]; λ = 0.05 per voxel. Solve with linear_sum_assignment; extra drones get the next-best cluster or HOLD.
@@ -348,12 +362,12 @@ Pathing
 • Goal viewpoints are FREE by construction; start voxel is forced passable.
 Safety shield (the fail-safe story)
 • Known-free only: inflate OCC by drone radius 0.25 m + margin 0.35 m, treat UNKNOWN as OCC for pathing. A drone never enters unobserved space.
-• Geofence: lot bounds shrunk by 0.5 m; ceiling 10 m.
+• Geofence: the operator's envelope shrunk by 0.5 m; ceiling 10 m.
 • Separation: minimum 1.5 m between drones. Priority = drone id; before each tick, if the next waypoints of two drones come within 1.5 m, the lower-priority one HOLDs for that tick. Replan for it if held more than 3 s.
 • Stuck detection: under 0.5 m progress in 5 s means blacklist goal and replan.
 • Drone kill: kill_drone marks it dead; the next 1 Hz assignment excludes it, so its frontiers are absorbed automatically. Log a DRONE_LOST event.
 • Low battery (under 15%): RTH regardless of state.
-Termination. No reachable frontier clusters with z < 10 m and coverage_ground_band >= 0.90, or timeout.
+Termination. No reachable frontier or inspection target in the survey region, or timeout. An optional planner.done_ground_coverage threshold is checked against the swarm's own estimate (surface_seen share of mapped ground-band surface), never the ground-truth score.
 Module 6: Perception
 The MVP uses ground-truth object IDs from ray casts; a YOLO meter detector is a stretch goal behind the same interface, selected by --detector gt|yolo.
 class Detector(Protocol):
