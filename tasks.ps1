@@ -10,7 +10,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'setup', 'lock', 'lint', 'format', 'typecheck',
-                 'test', 'test-cov', 'check', 'fly', 'view', 'props', 'clean')]
+                 'test', 'test-cov', 'test-all', 'check', 'fly', 'view', 'props', 'clean')]
     [string]$Task = 'help',
 
     # Extra arguments forwarded to the underlying command.
@@ -41,6 +41,7 @@ switch ($Task) {
             @{ n = 'typecheck'; d = 'Strict type check' }
             @{ n = 'test';      d = 'Run the fast tests' }
             @{ n = 'test-cov';  d = 'Run tests with a coverage report' }
+            @{ n = 'test-all';  d = 'Include the slow tests' }
             @{ n = 'check';     d = 'Everything CI runs' }
             @{ n = 'fly';       d = 'Single-drone flight check, kinematic' }
             @{ n = 'view';      d = 'Open the Canopy desktop viewer' }
@@ -64,6 +65,7 @@ switch ($Task) {
         Invoke-Step (@('uv', 'run', 'pytest', '--cov',
                        '--cov-report=term-missing', '--cov-report=xml') + $Extra)
     }
+    'test-all'  { Invoke-Step (@('uv', 'run', 'pytest', '-m', 'slow or not slow') + $Extra) }
     'check' {
         Invoke-Step @('uv', 'run', 'ruff', 'check', '.')
         Invoke-Step @('uv', 'run', 'ruff', 'format', '--check', '.')
@@ -72,7 +74,17 @@ switch ($Task) {
         Write-Host 'All checks passed.' -ForegroundColor Green
     }
     'fly'       { Invoke-Step (@('uv', 'run', 'canopy-fly') + $Extra) }
-    'view'      { Invoke-Step (@('uv', 'run', 'canopy-view') + $Extra) }
+    'view' {
+        # A terminal keeps the environment it was opened with, so a key saved
+        # to the user environment since then would be missed and address
+        # search would silently fall back to Photon.
+        if (-not $env:GEOAPIFY_API_KEY) {
+            $env:GEOAPIFY_API_KEY = [Environment]::GetEnvironmentVariable('GEOAPIFY_API_KEY', 'User')
+        }
+        $provider = if ($env:GEOAPIFY_API_KEY) { 'Geoapify' } else { 'Photon (no GEOAPIFY_API_KEY)' }
+        Write-Host "Address search: $provider" -ForegroundColor DarkGray
+        Invoke-Step (@('uv', 'run', 'canopy-view') + $Extra)
+    }
     'props'     { Invoke-Step (@('uv', 'run', 'python', 'scripts/build_props.py', '--catalog') + $Extra) }
     'clean' {
         foreach ($p in '.pytest_cache', '.ruff_cache', '.mypy_cache', 'htmlcov',

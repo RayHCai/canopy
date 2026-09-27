@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,13 @@ def test_viewer_detection_color_channel_above_255_is_rejected(tmp_path: Path) ->
         load_config(_write(tmp_path, raw))
 
 
+def test_viewer_scene_cache_max_below_one_is_rejected(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["viewer"]["scene_cache_max"] = 0
+    with pytest.raises(ConfigError, match="scene_cache_max must be at least 1, got 0"):
+        load_config(_write(tmp_path, raw))
+
+
 def test_sensor_ambient_outside_unit_interval_is_rejected(tmp_path: Path) -> None:
     raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
     raw["sensor"]["ambient"] = 1.5
@@ -261,4 +269,123 @@ def test_sensor_negative_rgb_noise_is_rejected(tmp_path: Path) -> None:
     raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
     raw["sensor"]["rgb_noise"] = -1.0
     with pytest.raises(ConfigError, match="rgb_noise must be non-negative"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_site_geocoder_must_be_a_known_provider(cfg: Config) -> None:
+    site = dataclasses.replace(cfg.worldgen.site, geocoder="google")
+    with pytest.raises(ConfigError, match=re.escape("worldgen.site.geocoder must be one of")):
+        site.validate()
+
+
+def test_site_suggest_countries_must_be_two_letter_codes(cfg: Config) -> None:
+    site = dataclasses.replace(cfg.worldgen.site, suggest_countries=("usa",))
+    with pytest.raises(ConfigError, match="two-letter ISO codes"):
+        site.validate()
+
+
+def test_site_overpass_query_timeout_must_be_below_the_socket_timeout(cfg: Config) -> None:
+    site = dataclasses.replace(
+        cfg.worldgen.site, overpass_query_timeout_s=cfg.worldgen.site.overpass_timeout_s
+    )
+    with pytest.raises(ConfigError, match="overpass_query_timeout_s"):
+        site.validate()
+
+
+@pytest.mark.parametrize(("field", "bad_value"), [("az_rays", 0), ("el_rays", 0)])
+def test_sensor_ray_counts_must_be_at_least_one(tmp_path: Path, field: str, bad_value: int) -> None:
+    """A zero ray count would divide by zero building the ray grid in sim/sensors.py."""
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["sensor"][field] = bad_value
+    with pytest.raises(ConfigError, match="az_rays and el_rays must be at least 1"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_sensor_max_range_must_be_positive(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["sensor"]["max_range_m"] = 0.0
+    with pytest.raises(ConfigError, match="max_range_m must be positive"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_sensor_elevation_band_must_be_ordered(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["sensor"]["el_min_deg"], raw["sensor"]["el_max_deg"] = (
+        raw["sensor"]["el_max_deg"],
+        raw["sensor"]["el_min_deg"],
+    )
+    with pytest.raises(ConfigError, match="must not exceed el_max_deg"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_sim_timeout_must_be_positive(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["sim"]["timeout_s"] = 0.0
+    with pytest.raises(ConfigError, match=r"sim\.timeout_s must be positive"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_sim_battery_drain_must_be_non_negative(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["sim"]["battery_drain_per_10s"] = -0.1
+    with pytest.raises(ConfigError, match="battery_drain_per_10s must be non-negative"):
+        load_config(_write(tmp_path, raw))
+
+
+@pytest.mark.parametrize("bad_value", [-0.1, 1.1])
+def test_sim_rth_battery_must_be_a_fraction(tmp_path: Path, bad_value: float) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["sim"]["rth_battery"] = bad_value
+    with pytest.raises(ConfigError, match=re.escape("sim.rth_battery must be in [0, 1]")):
+        load_config(_write(tmp_path, raw))
+
+
+def test_planner_orbit_altitudes_must_be_non_empty(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["planner"]["orbit_altitudes"] = []
+    with pytest.raises(ConfigError, match="orbit_altitudes must be non-empty"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_planner_inspect_bucket_must_be_positive(tmp_path: Path) -> None:
+    """A zero bucket size would divide by zero bucketing frontier surface."""
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["planner"]["inspect_bucket_m"] = 0.0
+    with pytest.raises(ConfigError, match=r"planner\.inspect_bucket_m must be positive"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_planner_viewpoint_range_must_be_ordered_and_positive(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["planner"]["viewpoint_range_m"] = [3.0, 1.5]
+    with pytest.raises(ConfigError, match=re.escape("planner.viewpoint_range_m must be")):
+        load_config(_write(tmp_path, raw))
+
+
+def test_planner_done_ground_coverage_must_be_a_fraction_when_set(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["planner"]["done_ground_coverage"] = 1.5
+    with pytest.raises(ConfigError, match="done_ground_coverage must be null or in \\[0, 1\\]"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_demo_laps_must_be_at_least_one(tmp_path: Path) -> None:
+    """Matches the CanopyError demo_path would otherwise raise mid-flight."""
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["demo"]["laps"] = 0
+    with pytest.raises(ConfigError, match=r"demo\.laps must be at least 1"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_demo_orbit_waypoints_must_close_a_loop(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["demo"]["orbit_waypoints"] = 2
+    with pytest.raises(ConfigError, match="orbit_waypoints must be at least 3"):
+        load_config(_write(tmp_path, raw))
+
+
+def test_demo_orbit_radius_must_be_positive(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path("config/default.yaml").read_text(encoding="utf-8"))
+    raw["demo"]["orbit_radius_m"] = 0.0
+    with pytest.raises(ConfigError, match=r"demo\.orbit_radius_m must be positive"):
         load_config(_write(tmp_path, raw))

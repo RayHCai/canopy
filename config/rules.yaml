@@ -23,7 +23,7 @@ battery:                  # bounding box used for every clearance rule
 placement:
   step_m: 0.1             # candidate spacing along each wall
   corner_margin_m: 0.1    # gap between the battery's side and the end of its wall
-  top_k: 3                # sites offered
+  top_k: 2                # sites offered
   min_separation_m: 1.0   # between offered sites, so they are distinct options
   fill_with_flagged: true # top up with non-PASS sites when fewer than top_k pass cleanly
                           # (they are always offered when none pass)

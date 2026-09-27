@@ -39,6 +39,70 @@ worldgen:
   trees: [2, 5]
   max_edge_m: 0.2
   launch_area_pads: 5         # launch columns kept clear for this many pads; >= viewer.max_drones
+  # Hard rules every property must meet, checked as each role is placed. A role
+  # that breaks one is redrawn with its corner clearance relaxed rung by rung
+  # (docs/adr/0015-address-seeded-sites.md).
+  invariants:
+    meter_centre_height_m: [1.3, 1.7]   # spec.md test_worldgen
+    meter_min_corner_clearance_m: 0.6
+    meter_working_space_m: 0.9          # clear in front of the meter for whoever reads or services it
+    corner_clearance_ladder_m: [0.9, 0.6]
+    repairs_per_rung: 4
+    meter_approach_m: 2.1               # reported only: INSPECT's 1.5 m close-up + the shield's 0.6 m
+  # Address-seeded sites: `canopy-site`, and Location: Address in the viewer.
+  # Open data only (OpenStreetMap via Photon and Overpass); both public servers
+  # are fair-use and best-effort, so a site is fetched once and then built offline.
+  site:
+    # Address search: "auto" uses Geoapify when its key is in the environment
+    # (near-complete address coverage), else Photon (free, OpenStreetMap only).
+    geocoder: "auto"
+    geocoder_url: "https://photon.komoot.io/api/"
+    geoapify_url: "https://api.geoapify.com/v1/geocode/autocomplete"
+    geoapify_key_env: "GEOAPIFY_API_KEY"   # the name of the variable, never the key itself
+    suggest_countries: []             # ISO 3166-1 alpha-2 codes, e.g. ["us"]; empty = worldwide
+    overpass_url: "https://overpass-api.de/api/interpreter"
+    user_agent: "canopy-sim/0.1 (address-seeded site survey simulation)"
+    timeout_s: 10.0                   # one address-search request; a keystroke's is cheap to drop
+    overpass_timeout_s: 45.0          # one Overpass request, incl. the wait for a slot (seen up to ~38 s)
+    overpass_query_timeout_s: 25      # [timeout:] sent to Overpass: below overpass_timeout_s
+    overpass_retries: 3               # busy (429/502/503/504) and timed-out attempts are routine
+    overpass_backoff_s: 4.0           # doubles per retry: 4, 8, 16 s
+    suggest_limit: 6
+    aoi_radius_m: 75.0                # ~ the 150 m neighbourhood the generator builds around a lot
+    snap_radius_m: 30.0
+    max_neighbours: 16
+    party_wall_gap_m: 0.5
+    storey_m: 2.8
+    roof_allowance_m: 2.0
+    street_centre_offset_m: 5.25      # front lot line to centreline, as frontage_strip lays out the street
+    default_street_width_m: 7.5
+    default_front_yard_m: 6.0
+    min_front_yard_m: 4.5             # keeps the launch pads clear of the house
+    default_side_yard_m: 4.0
+    default_back_yard_m: 10.0
+    min_lot_m: [12.0, 20.0]
+    max_lot_m: [80.0, 80.0]
+    max_footprint_m2: 400.0
+    max_levels: 2                     # the house models are one or two storeys
+    raster_m: 0.1
+    max_masses: 3
+    min_mass_m: 2.5
+    min_fit_iou: 0.6
+    warn_fit_iou: 0.85
+    # Log-odds each piece of evidence adds to "this address is a home".
+    residential:
+      accept_p: 0.8
+      reject_p: 0.2
+      house_area_m2: [40.0, 400.0]
+      w_building_house: 2.5
+      w_building_residential: 1.0
+      w_building_nonresidential: -3.0
+      w_poi_inside: -2.5
+      w_landuse_residential: 1.5
+      w_landuse_nonresidential: -2.0
+      w_house_sized: 0.5
+      w_low_rise: 0.3
+      w_unit_suite: -1.0
 
 # Object detection from range and colour alone (canopy.perception); ground-truth
 # object ids never reach it. Each `classes` entry is one kind of object: a
@@ -196,6 +260,14 @@ map:
   carve_ray_stride: 2       # carve free space along every Nth ray; hits use all rays
   carve_step_m: 0.2         # sample spacing along a ray when carving
   carve_stop_short_m: 0.3   # stop carving this far before a hit, so noise can't free it
+  # The swarm is told nothing about the lot. It takes the house to be the mapped
+  # building nearest the launch pads -- plan columns that fill this band, as in
+  # rules.yaml outline -- and surveys only within survey_margin_m of it
+  # (docs/adr/0016-drones-see-only-their-sensors.md).
+  house_band_z_m: [1.5, 2.8]
+  house_min_fill: 0.6
+  house_min_wall_m: 4.0     # shorter runs of wall are sheds, fences or clutter
+  survey_margin_m: 6.0
 
 planner:
   orbit_altitudes: [2.0, 4.5, 8.0]
@@ -216,8 +288,9 @@ planner:
   hysteresis: 0.2
   blacklist_s: 30
   visited_radius_m: 2.0          # a frontier this close to a reached goal is spent
-  # Stop exploring once ground-band coverage reaches this; null = keep going until
-  # no reachable frontier or unseen surface is left, so the whole lot is mapped.
+  # Stop exploring once the swarm's own estimate of ground-band coverage (seen over
+  # mapped surface near the house) reaches this; null = keep going until no
+  # reachable frontier or unseen surface is left.
   # spec.md says 0.90, which can leave the lawn and roof partly unmapped.
   done_ground_coverage: null
   takeoff_altitude_m: 2.0
@@ -232,6 +305,10 @@ safety:
   min_separation_m: 1.5
   ceiling_m: 10.0
   geofence_inset_m: 0.5
+  # Operator flight envelope, metres from the launch pads' centroid along world
+  # x and y. The only extent the swarm is given; it sizes the map and the geofence.
+  envelope_x_m: [-25.0, 25.0]
+  envelope_y_m: [-4.0, 40.0]
   stuck_window_s: 5
   stuck_min_progress_m: 0.5
   hold_replan_s: 3.0         # shield-held this long -> replan around other drones
@@ -270,3 +347,9 @@ viewer:
   site_rgb: [255, 230, 120]          # light yellow: PASS
   site_warning_rgb: [255, 160, 70]   # orange: MANUAL_REVIEW
   site_reject_rgb: [220, 70, 70]     # red: REJECT (only shown when nothing passes)
+  # Where the page uploads a finished run: photos, video and the run record
+  # (docs/adr/0017-intake-review-api-and-run-capture.md). Python never calls it.
+  review_api_url: "http://localhost:4000"
+  # Generated scenes kept under out/viewer/<seed>, most recently used first;
+  # older ones are deleted. The loaded scene is always kept; out/sites is never touched.
+  scene_cache_max: 20

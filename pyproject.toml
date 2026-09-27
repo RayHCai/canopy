@@ -65,6 +65,7 @@ default-groups = ["dev", "viewer"]
 # importable, testable and type-checked like everything else.
 canopy-fly = "canopy.cli.fly_single:main"
 canopy-view = "canopy.cli.view:main"
+canopy-site = "canopy.cli.site:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -180,6 +181,7 @@ addopts = [
 ]
 markers = [
   "slow: takes more than a couple of seconds",
+  "network: talks to live public geodata services; skipped unless --run-network",
 ]
 filterwarnings = [
   "error",
