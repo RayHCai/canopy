@@ -1,0 +1,4 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+bucket_name          = "canopy-media-yourname"
+region               = "us-east-1"
+cors_allowed_origins = ["http://localhost:3000", "http://localhost:4000"]

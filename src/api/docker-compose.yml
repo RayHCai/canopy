@@ -1,0 +1,70 @@
+name: canopy-api
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: canopy
+      POSTGRES_PASSWORD: canopy
+      POSTGRES_DB: canopy
+    ports:
+      # Host port 5433, not 5432 -- a machine can easily have a native or
+      # other-project Postgres already bound to 5432.
+      - "5433:5432"
+    volumes:
+      - canopy-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canopy -d canopy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # The official minio/minio and quay.io/minio/minio images now require a
+  # registry login to pull (MinIO gated anonymous access in 2025); this uses
+  # the last free Bitnami build of the same open-source MinIO server/client
+  # instead, from the `bitnamilegacy` org. Swap back to `minio/minio` /
+  # `minio/mc` if you have credentials for the official images.
+  minio:
+    image: bitnamilegacy/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: canopy
+      MINIO_ROOT_PASSWORD: canopy12345
+      MINIO_DEFAULT_BUCKETS: canopy
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - canopy-minio-data:/bitnami/minio/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot init: confirm the bucket (created by MINIO_DEFAULT_BUCKETS
+  # above) and set a permissive CORS rule so the viewer page (served from a
+  # random 127.0.0.1 port) can PUT blobs to presigned URLs and the dashboard
+  # can GET/stream them. `api cors_allow_origin=*` is this server's default
+  # already (verified with a manual OPTIONS preflight against the bucket);
+  # this sets it explicitly so it doesn't depend on that default. Bucket-level
+  # `mc cors set` is skipped -- this mc/server version pair fails to decode
+  # the (empty) existing CORS config it reads back before applying a new one.
+  minio-init:
+    image: bitnamilegacy/minio-client:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        mc alias set local http://minio:9000 canopy canopy12345 &&
+        mc mb --ignore-existing local/canopy &&
+        mc anonymous set download local/canopy &&
+        mc admin config set local api cors_allow_origin='*' &&
+        exit 0
+
+volumes:
+  canopy-postgres-data:
+  canopy-minio-data:

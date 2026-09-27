@@ -1,0 +1,145 @@
+// Canopy review API schema (ADR 0017). One Review per member intake; the
+// swarm's run (tracks, events, detections, site suggestions, blockers) hangs
+// off it once PUT /reviews/:id/run lands. Everything the dashboard renders
+// is reconstructed from these rows by src/mapping.ts -- this schema stores
+// facts, not response shapes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ReviewStatus {
+  AWAITING
+  READY
+  EMAIL_SENT
+}
+
+model Review {
+  id       String @id @default(cuid())
+  name     String
+  email    String
+  address  String
+  lat      Float?
+  lon      Float?
+  siteId   String?
+
+  status     ReviewStatus @default(AWAITING)
+  seed       Int
+  droneCount Int
+  createdAt  DateTime     @default(now())
+
+  // Populated by PUT /reviews/:id/run, from ViewerSession.run_record().
+  startedAt      DateTime?
+  locationMode   String? // record.location.mode: "random" | "address"
+  simDurationS   Float?
+  mappedAtS      Float?
+  coverageTotal  Float?
+  coverageGround Float?
+  verdict        String? // record.site.verdict (overall, distinct from a SiteSuggestion's own verdict)
+  justification  String?
+  videoKey       String?
+
+  // { placementPhotoId, reason } for the recommended site, once analysed.
+  recommendation Json?
+  // SentEmail (dashboard shape), written by POST /reviews/:id/email.
+  sentEmail      Json?
+
+  tracks     DroneTrack[]
+  events     FleetEvent[]
+  detections Detection[]
+  sites      SiteSuggestion[]
+
+  @@index([createdAt])
+}
+
+model DroneTrack {
+  id       String @id @default(cuid())
+  reviewId String
+  review   Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  droneId Int
+  samples Json // [[t, x, y, z, yaw, battery], ...]
+  alive   Boolean
+  battery Float
+
+  @@index([reviewId])
+}
+
+model FleetEvent {
+  id       String @id @default(cuid())
+  reviewId String
+  review   Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  t          Float
+  droneId    Int
+  type       String
+  message    String
+  status     String
+  batteryPct Int
+  task       String
+
+  @@index([reviewId])
+}
+
+model Detection {
+  id       String @id @default(cuid())
+  reviewId String
+  review   Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  detId      Int
+  cls        String
+  color      Json
+  center     Json
+  size       Json
+  yaw        Float
+  confidence Float
+
+  @@index([reviewId])
+}
+
+model SiteSuggestion {
+  id       String @id @default(cuid())
+  reviewId String
+  review   Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  rank      Int
+  pos       Json
+  meter     Json
+  yaw       Float
+  cost      Float
+  verdict   String
+  breakdown Json
+  warnings  Json
+
+  // Rendered "drone photo" for this site, if the page uploaded one.
+  photoKey       String?
+  photoW         Int?
+  photoH         Int?
+  placementBoxes Json?
+  summary        String?
+
+  blockers Blocker[]
+
+  @@unique([reviewId, rank])
+  @@index([reviewId])
+}
+
+model Blocker {
+  id     String         @id @default(cuid())
+  siteId String
+  site   SiteSuggestion @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  type        String
+  severity    String
+  description String
+  requiredFix String
+  box         Json
+  trackId     Int?
+
+  @@index([siteId])
+}
