@@ -38,6 +38,20 @@ def _copy_state(state: DroneState) -> DroneState:
     )
 
 
+def _copy_state_readonly(state: DroneState) -> DroneState:
+    """Return an independent copy of ``state`` whose arrays cannot be mutated.
+
+    Used for states handed to callers outside the dynamics loop: those arrays
+    are never written back into, so freezing them is free and turns an
+    accidental ``state.pos[:] = ...`` into an immediate ``ValueError`` rather
+    than a silent corruption of a later tick.
+    """
+    copy = _copy_state(state)
+    copy.pos.flags.writeable = False
+    copy.vel.flags.writeable = False
+    return copy
+
+
 def _drain_battery(state: DroneState, dt: float, drain_per_10s: float) -> None:
     """Apply the linear battery model in place."""
     state.battery = max(0.0, state.battery - drain_per_10s * dt / 10.0)
@@ -101,7 +115,8 @@ class KinematicDynamics:
 
         # Snapshots, not the live objects: a caller that accumulates the returned
         # states would otherwise end up holding N aliases of one mutating object.
-        return [_copy_state(s) for s in self._states]
+        # Read-only snapshots, at that: nothing downstream writes through them.
+        return [_copy_state_readonly(s) for s in self._states]
 
     # -- internals ----------------------------------------------------------
     def _track(self, state: DroneState, target: Vec3 | None, dt: float) -> None:

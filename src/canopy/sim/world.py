@@ -64,6 +64,11 @@ class SimWorld:
             for i, p in enumerate(np.asarray(pads, dtype=np.float64).reshape(-1, 3))
         ]
         self._dynamics.reset(self._states)
+        # `.drones` hands these out before `step` has ever run; freeze them too,
+        # matching the read-only snapshots `KinematicDynamics.step` returns.
+        for state in self._states:
+            state.pos.flags.writeable = False
+            state.vel.flags.writeable = False
         self._tick = 0
         # Scans land on every Nth control tick; SimCfg.validate guarantees N is whole.
         self._sensor_every = cfg.sim.control_hz // cfg.sim.sensor_hz
@@ -75,7 +80,14 @@ class SimWorld:
 
     @property
     def drones(self) -> list[DroneState]:
-        """Every drone's latest state, in ``drone_id`` order."""
+        """Every drone's latest state, in ``drone_id`` order.
+
+        Each returned state is an independent snapshot, not the live simulator
+        object, and its ``pos``/``vel`` arrays are marked read-only: writing
+        through them (``state.pos[:] = ...``) raises ``ValueError`` rather than
+        silently corrupting the next tick. Reassigning the attribute itself
+        (``state.pos = ...``) is fine but has no effect on the simulation.
+        """
         return list(self._states)
 
     @property

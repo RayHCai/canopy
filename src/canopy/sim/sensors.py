@@ -238,6 +238,8 @@ class RaySensor:
             obj_ids=obj_ids,
             tri_ids=tri_ids,
             rgb=rgb,
+            # The per-scan jitter turns the whole grid, so its layout holds.
+            grid_shape=(self._cfg.az_rays, self._cfg.el_rays),
         )
 
     def _shade(
@@ -286,9 +288,9 @@ def _direction_grid(az_rays: int, el_rays: int, el_min_deg: float, el_max_deg: f
     Azimuth spans ``[0, 2*pi)`` (half-open: 0 and 2*pi are the same ray, so the
     endpoint is dropped) with ``az_rays`` samples; elevation spans
     ``[el_min_deg, el_max_deg]`` inclusive with ``el_rays`` samples. The
-    ``(az, el)`` grid is flattened azimuth-major, an ordering convention
-    private to this module and undone nowhere -- callers only ever see
-    ``(n_rays, 3)``.
+    ``(az, el)`` grid is flattened azimuth-major. Scans publish that layout as
+    :attr:`~canopy.contracts.Observation.grid_shape`, as a real lidar's range
+    image does, so the mapper can find each ray's neighbours.
     """
     az = np.linspace(0.0, 2.0 * np.pi, az_rays, endpoint=False)
     el = np.deg2rad(np.linspace(el_min_deg, el_max_deg, el_rays))
