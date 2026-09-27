@@ -17,9 +17,13 @@ Phases are global and linear::
   mapped-but-unseen surfaces -- match drones to them with the Hungarian
   algorithm and plan paths to their viewpoints. Ends when no reachable target
   is left, at ``sim.timeout_s``, or, if ``planner.done_ground_coverage`` is
-  set, when ground-band coverage reaches it. The shipped config leaves it
-  unset, so the whole lot is mapped. A drone the assignment leaves without a
-  target for ``planner.idle_return_s`` has finished its share: it flies home
+  set, when the swarm's own estimate of ground-band coverage
+  (:func:`~canopy.planning.frontier.inspected_fraction`) reaches it. The
+  shipped config leaves it unset, so the whole survey region is mapped.
+  Targets are drawn only from inside the operator's envelope and, once the
+  mapper has found the house, the survey region around it; the controller is
+  never told where the lot is (ADR 0016). A drone the assignment leaves
+  without a target for ``planner.idle_return_s`` has finished its share: it flies home
   and lands rather than hovering until the others are done. Until it touches
   down it is still in the assignment, so a frontier that opens up in the
   meantime can recall it; once landed it stays down.
@@ -61,7 +65,12 @@ from canopy.contracts import DroneState, DroneTask, MapState, Points, Vec3
 from canopy.errors import PlanningError
 from canopy.log import get_logger
 from canopy.planning.assign import assign_frontiers
-from canopy.planning.frontier import Frontier, find_frontiers, find_inspection_targets
+from canopy.planning.frontier import (
+    Frontier,
+    find_frontiers,
+    find_inspection_targets,
+    inspected_fraction,
+)
 from canopy.planning.pathing import PlanningGrid, plan_path, planning_grid
 from canopy.planning.safety import ClearanceMap, Shield, geofence_box
 from canopy.planning.waypoints import WaypointFollower
@@ -135,17 +144,18 @@ class MissionController:
     cfg
         Validated configuration. Reads ``sim``, ``map``, ``planner`` and
         ``safety``.
-    lot_bounds
-        ``[[xmin, ymin, zmin], [xmax, ymax, zmax]]`` of the surveyed lot; the
-        geofence is derived from it.
+    envelope
+        ``[[xmin, ymin, zmin], [xmax, ymax, zmax]]``, the operator's flight
+        envelope (:func:`canopy.mapping.survey_envelope`); the geofence is
+        derived from it.
     pads
         Launch pad per drone, shape ``(N, 3)``; drone ``i`` launches from
         ``pads[i]`` and returns there.
     """
 
-    def __init__(self, cfg: Config, lot_bounds: npt.NDArray[np.float64], pads: Points) -> None:
+    def __init__(self, cfg: Config, envelope: npt.NDArray[np.float64], pads: Points) -> None:
         self._cfg = cfg
-        self._geofence = geofence_box(lot_bounds, cfg.safety)
+        self._geofence = geofence_box(envelope, cfg.safety)
         self._shield = Shield(cfg.safety, cfg.sim)
         self._phase = Phase.TAKEOFF
         self._drones: dict[int, _Drone] = {}
@@ -214,7 +224,6 @@ class MissionController:
         map_state: MapState,
         *,
         map_version: int,
-        coverage_ground_band: float,
     ) -> dict[int, Vec3]:
         """Advance the mission one control tick and return vetted targets.
 
@@ -229,8 +238,6 @@ class MissionController:
         map_version
             Bumped by the mapper whenever ``map_state.occ`` changes; the
             clearance field is rebuilt only when it has.
-        coverage_ground_band
-            Current ground-band coverage in ``[0, 1]``.
 
         Returns
         -------
@@ -246,7 +253,7 @@ class MissionController:
 
         if t >= self._next_replan or self._clearance is None:
             self._refresh_clearance(map_state, map_version)
-            self._replan(t, live, map_state, coverage_ground_band)
+            self._replan(t, live, map_state)
             self._next_replan = t + 1.0 / self._cfg.sim.replan_hz
         clearance = self._clearance
         if clearance is None:  # pragma: no cover - set by _refresh_clearance above
@@ -267,9 +274,7 @@ class MissionController:
             self._clearance = ClearanceMap.from_map(map_state, self._geofence)
             self._clearance_version = map_version
 
-    def _replan(
-        self, t: float, live: list[DroneState], map_state: MapState, coverage: float
-    ) -> None:
+    def _replan(self, t: float, live: list[DroneState], map_state: MapState) -> None:
         """Make the 1 Hz decision: escapes, battery, termination, assignment, paths."""
         clearance = self._clearance
         if clearance is None:  # pragma: no cover - set by _refresh_clearance
@@ -297,7 +302,7 @@ class MissionController:
             and s.battery > self._cfg.sim.rth_battery
         ]
         self._frontiers = self._find_frontiers(t, live, map_state)
-        reason = self._termination(t, coverage)
+        reason = self._termination(t, map_state)
         if reason is not None:
             _log.info("exploration done at t=%.1f s: %s", t, reason)
             self._phase = Phase.RETURN
@@ -443,11 +448,13 @@ class MissionController:
             blocked |= (gaps < radii[None, :]).any(axis=1)
         return [f for f, spent in zip(found, blocked, strict=True) if not spent]
 
-    def _termination(self, t: float, coverage: float) -> str | None:
+    def _termination(self, t: float, map_state: MapState) -> str | None:
         """Why exploration should stop now, or ``None`` to carry on."""
         threshold = self._cfg.planner.done_ground_coverage
-        if threshold is not None and coverage >= threshold:
-            return f"ground-band coverage {coverage:.3f}"
+        if threshold is not None:
+            coverage = inspected_fraction(map_state, self._cfg.map)
+            if coverage >= threshold:
+                return f"estimated ground-band coverage {coverage:.3f}"
         if not self._frontiers:
             return "no reachable frontiers"
         if t >= self._cfg.sim.timeout_s:
@@ -740,11 +747,20 @@ class MissionController:
                 if self._give_way(t, by_id[yielder], by_id.get(blocker), live):
                     break
             else:
-                _log.warning(
-                    "drones %s are in a standoff neither can plan out of; retrying in %.0f s",
-                    " and ".join(str(i) for i in sorted({drone_id, other})),
-                    wait,
-                )
+                if drone_id not in by_id or other not in by_id:
+                    _log.warning(
+                        "drone %d cannot plan out of the way of drone %d, which is gone; "
+                        "retrying in %.0f s",
+                        pair[0],
+                        other if pair[0] == drone_id else drone_id,
+                        wait,
+                    )
+                else:
+                    _log.warning(
+                        "drones %s are in a standoff neither can plan out of; retrying in %.0f s",
+                        " and ".join(str(i) for i in sorted({drone_id, other})),
+                        wait,
+                    )
 
     def _give_way(
         self, t: float, state: DroneState, blocker: DroneState | None, live: list[DroneState]

@@ -1,9 +1,10 @@
 """Waypoint geometry and the local follower.
 
-The ORBIT state of the mission state machine flies rings around the house; the
-obstacle-free flight check (``canopy-fly``) flies one such ring around the
-launch pad. Both come from :func:`orbit_ring`, so the demo exercises the same
-code path the mission will.
+:func:`orbit_ring` and :func:`demo_path` are the obstacle-free flight check
+(``canopy-fly``): one drone climbs to altitude and flies rings around the
+launch pad, with no scene, sensing or mission logic involved. The mission
+state machine (:mod:`canopy.planning.mission`) uses :class:`WaypointFollower`
+directly for its own paths, not these ring helpers.
 """
 
 from __future__ import annotations

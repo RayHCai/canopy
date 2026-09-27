@@ -9,7 +9,12 @@ Per control tick::
 
     targets = controller.step(map)      # plan, follow, shield
     scans   = world.step(targets)       # move; scan on sensor ticks
-    mapper.integrate(scan) for scan in scans
+    mapper.integrate(scan.observation()) for scan in scans   # the swarm
+    coverage.integrate(scan) for scan in scans               # the score
+
+This is also where the information boundary is drawn (ADR 0016). The world,
+its sensor and the coverage score hold the scene; the mapper and controller
+are handed only observations, the launch pads and the operator's envelope.
 """
 
 from __future__ import annotations
@@ -17,9 +22,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 
-from canopy.contracts import DroneState, SceneGeometry, SceneManifest
-from canopy.mapping import Mapper
+from canopy.contracts import DroneState, Scan, SceneGeometry, SceneManifest
+from canopy.errors import PlanningError
+from canopy.mapping import CoverageTracker, Mapper, survey_envelope
 from canopy.planning.mission import MissionController, Phase
 from canopy.sim import SimWorld
 from canopy.worldgen import launch_pads
@@ -37,8 +44,8 @@ class MissionRun:
     Parameters
     ----------
     manifest
-        The property. Only its lot bounds and launch point reach the planner;
-        the geometry reaches the sensor and the coverage bookkeeping.
+        The property. Only its launch point reaches the swarm, as the pads
+        the crew set down; the rest reaches the coverage score.
     geometry
         The manifest's triangles (:func:`canopy.sim.scene.load_geometry`).
     n_drones
@@ -61,15 +68,26 @@ class MissionRun:
         seed: int = 0,
         sensor: RaySensor | None = None,
     ) -> None:
+        # Caught here, not downstream: an empty pad array reaches the mapper as
+        # a NaN mean and fails there as a bare ValueError naming nothing.
+        if n_drones < 1:
+            msg = f"a mission needs at least one drone, got n_drones={n_drones}"
+            raise PlanningError(msg)
         self._cfg = cfg
         self.pads = launch_pads(manifest.home, n_drones, cfg)
         self.world = SimWorld(geometry, self.pads, cfg, np.random.default_rng(seed), sensor=sensor)
-        self.mapper = Mapper(manifest, geometry, cfg)
-        self.controller = MissionController(cfg, manifest.lot_bounds, self.pads)
+        envelope = survey_envelope(self.pads, cfg)
+        self.mapper = Mapper(cfg, envelope, self.pads[:, :2].mean(axis=0))
+        self.controller = MissionController(cfg, envelope, self.pads)
+        state = self.mapper.state
+        self._geometry = geometry
+        self._coverage = CoverageTracker(
+            manifest, geometry, cfg.map, state.origin, state.voxel, state.occ.shape
+        )
         for lo, hi in self.controller.launch_boxes():
             self.mapper.mark_free_box(lo, hi)
         for scan in self.world.scan_all():
-            self.mapper.integrate(scan)
+            self._integrate(scan)
 
     @property
     def t(self) -> float:
@@ -91,6 +109,20 @@ class MissionRun:
         """Whether the mission has finished and every drone is home."""
         return self.controller.done
 
+    @property
+    def coverage_ground_band(self) -> float:
+        """Ground-truth ground-band coverage, the mission score; never read by the swarm."""
+        return self._coverage.coverage_ground_band
+
+    @property
+    def coverage_total(self) -> float:
+        """Ground-truth coverage of every non-ground surface on the lot."""
+        return self._coverage.coverage_total
+
+    def pop_revealed(self) -> npt.NDArray[np.int64]:
+        """Sorted unique triangle ids newly seen since the last call, for the reveal."""
+        return self._coverage.pop_revealed()
+
     def tick(self) -> None:
         """Advance one control tick. A finished mission keeps its drones parked."""
         targets = self.controller.step(
@@ -98,10 +130,14 @@ class MissionRun:
             self.world.drones,
             self.mapper.state,
             map_version=self.mapper.version,
-            coverage_ground_band=self.mapper.coverage_ground_band,
         )
         for scan in self.world.step(targets):
-            self.mapper.integrate(scan)
+            self._integrate(scan)
+
+    def _integrate(self, scan: Scan) -> None:
+        """Hand the swarm what its sensor sensed, and score the scan against the scene."""
+        self.mapper.integrate(scan.observation())
+        self._coverage.integrate(scan, self._geometry)
 
     def run(self, max_t_s: float) -> None:
         """Tick until the mission is done or ``max_t_s`` of simulated time passes."""

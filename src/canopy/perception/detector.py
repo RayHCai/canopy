@@ -69,12 +69,12 @@ class _Candidate:
 class _ClassModel:
     """One class's rules and the evidence pooled for it."""
 
-    def __init__(self, spec: PerceptionClassCfg, lot_lo: Vec3, lot_hi: Vec3) -> None:
+    def __init__(self, spec: PerceptionClassCfg, xy_lo: Vec3, xy_hi: Vec3) -> None:
         self.spec = spec
         self.cls = Cls[spec.cls]
         self.colour = ColourRule(spec.hue_deg, spec.sat, spec.val)
-        lo = np.array([lot_lo[0], lot_lo[1], spec.z_m[0]], dtype=np.float64)
-        hi = np.array([lot_hi[0], lot_hi[1], spec.z_m[1]], dtype=np.float64)
+        lo = np.array([xy_lo[0], xy_lo[1], spec.z_m[0]], dtype=np.float64)
+        hi = np.array([xy_hi[0], xy_hi[1], spec.z_m[1]], dtype=np.float64)
         self.cells = CellMap(lo, hi, spec.cell_m)
 
     def counted(self, min_cell_hits: int, noise: float, tolerance: float) -> IntArray:
@@ -113,16 +113,17 @@ class ObjectDetector:
     cfg
         The ``perception`` config section: shared tunables plus one entry per
         class, in :attr:`~canopy.config.PerceptionCfg.classes`.
-    lot_bounds
-        ``[[xmin, ymin, zmin], [xmax, ymax, zmax]]`` of the surveyed lot. The
-        parcel's extent is prior knowledge a real survey has too. Only ``x``
-        and ``y`` are used, which keeps the neighbours' houses and the street
-        out of the evidence.
+    bounds
+        ``[[xmin, ymin, ...], [xmax, ymax, ...]]``: the operator's flight
+        envelope, the only extent the swarm is given (ADR 0016). Only ``x``
+        and ``y`` are used; evidence outside them is dropped. It is not the
+        lot, so neighbours inside it are still detected; the mapper narrows
+        what it reports to the house it infers.
     """
 
-    def __init__(self, cfg: PerceptionCfg, lot_bounds: npt.NDArray[np.float64]) -> None:
+    def __init__(self, cfg: PerceptionCfg, bounds: npt.NDArray[np.float64]) -> None:
         self._cfg = cfg
-        bounds = np.asarray(lot_bounds, dtype=np.float64)
+        bounds = np.asarray(bounds, dtype=np.float64)
         self._models = tuple(_ClassModel(spec, bounds[0], bounds[1]) for spec in cfg.classes)
         self._by_name = {m.spec.cls: m for m in self._models}
         self._xy_lo = bounds[0, :2]

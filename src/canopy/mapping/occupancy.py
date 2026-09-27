@@ -1,10 +1,11 @@
 """Occupancy grid: the planner's view of the world.
 
-Every scan is fused into one shared voxel grid spanning the surveyed lot
-(``manifest.lot_bounds``) from the ground to ``cfg.height_m``. Anything a ray
-hits or passes through outside that box is dropped: the swarm's job is the lot,
-not the neighbours, so a grid that stopped at the fence is what keeps
-:class:`SceneObject.background` hits from ever reaching the planner.
+Every sweep is fused into one shared voxel grid spanning the operator's flight
+envelope (:func:`canopy.mapping.property.survey_envelope`) from the ground to
+``cfg.height_m``. Anything a ray hits or passes through outside that box is
+dropped. The envelope is all the swarm is told about extent: it is not the
+lot, and it takes in neighbours and street, which the mapper tells apart from
+the house by itself.
 
 Carving free space from every ray would dominate the per-scan cost for no
 planning benefit -- a corridor of FREE voxels a few rays apart looks the same
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
-from canopy.contracts import MapState, Occ, Scan, Vec3
+from canopy.contracts import MapState, Observation, Occ, Vec3
 
 if TYPE_CHECKING:
     from canopy.config import MapCfg
@@ -29,27 +30,24 @@ if TYPE_CHECKING:
 __all__ = ["integrate_occupancy", "mark_free_box", "new_map_state"]
 
 
-def new_map_state(lot_bounds: npt.NDArray[np.float64], cfg: MapCfg, n_triangles: int) -> MapState:
-    """Build an empty :class:`MapState` over the surveyed lot.
+def new_map_state(bounds: npt.NDArray[np.float64], cfg: MapCfg) -> MapState:
+    """Build an empty :class:`MapState` over a plan box.
 
     Parameters
     ----------
-    lot_bounds
-        ``[[xmin, ymin, zmin], [xmax, ymax, zmax]]`` of the surveyed lot; only
-        ``x``/``y`` are used, ground truth ``zmin``/``zmax`` are ignored in
-        favour of ``0`` to ``cfg.height_m`` (the swarm never maps below the
-        ground plane).
+    bounds
+        ``[[xmin, ymin, ...], [xmax, ymax, ...]]``, usually the operator's
+        envelope; only ``x``/``y`` are used, and the grid runs from ``0`` to
+        ``cfg.height_m`` (the swarm never maps below the ground plane).
     cfg
         Map configuration; ``voxel_m`` sets the grid resolution.
-    n_triangles
-        Total triangle count of the scene geometry, i.e. ``SceneGeometry.n_triangles``.
 
     Returns
     -------
     MapState
-        All voxels UNKNOWN, no triangle seen.
+        All voxels UNKNOWN.
     """
-    bounds = np.asarray(lot_bounds, dtype=np.float64)
+    bounds = np.asarray(bounds, dtype=np.float64)
     origin = np.array([bounds[0, 0], bounds[0, 1], 0.0], dtype=np.float64)
     extent = np.array([bounds[1, 0] - bounds[0, 0], bounds[1, 1] - bounds[0, 1], cfg.height_m])
     shape = tuple(int(n) for n in np.round(extent / cfg.voxel_m))
@@ -57,7 +55,6 @@ def new_map_state(lot_bounds: npt.NDArray[np.float64], cfg: MapCfg, n_triangles:
         occ=np.full(shape, Occ.UNKNOWN, dtype=np.uint8),
         origin=origin,
         voxel=cfg.voxel_m,
-        tri_seen=np.zeros(n_triangles, dtype=np.bool_),
     )
 
 
@@ -73,15 +70,17 @@ def _in_grid(idx: npt.NDArray[np.intp], shape: tuple[int, int, int]) -> npt.NDAr
     return np.asarray(lo & hi, dtype=np.bool_)
 
 
-def integrate_occupancy(state: MapState, scan: Scan, cfg: MapCfg, max_range_m: float) -> bool:
-    """Fuse one scan's occupancy into ``state.occ`` in place.
+def integrate_occupancy(
+    state: MapState, scan: Observation, cfg: MapCfg, max_range_m: float
+) -> bool:
+    """Fuse one sweep's occupancy into ``state.occ`` in place.
 
     Parameters
     ----------
     state
         Shared map, mutated in place.
     scan
-        One 360-degree ray cast.
+        One 360-degree sweep.
     cfg
         Map configuration; supplies the carve stride, step and stop-short.
     max_range_m

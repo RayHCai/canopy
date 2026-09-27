@@ -10,8 +10,13 @@ import pytest
 from scipy import ndimage
 
 from canopy.config import Config
-from canopy.contracts import MapState
-from canopy.planning.frontier import find_frontiers, find_inspection_targets, frontier_voxels
+from canopy.contracts import MapState, Occ
+from canopy.planning.frontier import (
+    find_frontiers,
+    find_inspection_targets,
+    frontier_voxels,
+    inspected_fraction,
+)
 from canopy.planning.pathing import PlanningGrid, planning_grid
 from canopy.planning.safety import ClearanceMap
 
@@ -210,6 +215,82 @@ def test_find_inspection_targets_none_when_surface_already_seen(
     assert (
         find_inspection_targets(state, cm, grid, cfg.planner, cfg.map, components=components) == []
     )
+
+
+def test_frontier_voxels_outside_survey_bounds_is_ignored(
+    cfg: Config,
+    make_map: Callable[..., MapState],
+    clearance: Callable[..., ClearanceMap],
+) -> None:
+    """A frontier voxel inside the geofence but outside ``state.survey_bounds`` is dropped."""
+    unknown_box = ((0.0, -20.0, 1.0), (15.0, 20.0, 8.0))
+    state = make_map(unknown=[unknown_box])
+    cm = clearance(unknown=[unknown_box])
+    assert frontier_voxels(state, cm, cfg.planner).any()
+
+    # A survey box nowhere near the unknown region: nothing survives.
+    state.survey_bounds = np.array([[100.0, 100.0], [101.0, 101.0]])
+    assert not frontier_voxels(state, cm, cfg.planner).any()
+
+
+def test_frontier_voxels_partial_survey_bounds_keeps_only_the_inside(
+    cfg: Config,
+    make_map: Callable[..., MapState],
+    clearance: Callable[..., ClearanceMap],
+) -> None:
+    """Restricting ``survey_bounds`` in x keeps only the voxels whose centre falls inside it."""
+    unknown_box = ((-10.0, -1.0, 3.0), (10.0, 1.0, 5.0))
+    state = make_map(unknown=[unknown_box])
+    cm = clearance(unknown=[unknown_box])
+    state.survey_bounds = np.array([[-3.0, -20.0], [3.0, 20.0]])
+
+    mask = frontier_voxels(state, cm, cfg.planner)
+    assert mask.any()
+    i, _, _ = np.nonzero(mask)
+    x = state.origin[0] + (i + 0.5) * state.voxel
+    assert np.all(x >= -3.0 - 1e-9)
+    assert np.all(x <= 3.0 + 1e-9)
+
+
+def test_find_inspection_targets_respects_survey_bounds(
+    cfg: Config,
+    make_map: Callable[..., MapState],
+    clearance: Callable[..., ClearanceMap],
+) -> None:
+    """A mapped-but-unseen surface outside ``state.survey_bounds`` gets no inspection target."""
+    state, cm, grid, components = _wall_grid_and_component(cfg, make_map, clearance)
+    state.surface_seen = np.zeros_like(state.occ, dtype=np.bool_)
+
+    state.survey_bounds = np.array([[100.0, 100.0], [101.0, 101.0]])
+    assert (
+        find_inspection_targets(state, cm, grid, cfg.planner, cfg.map, components=components) == []
+    )
+
+    # Half the wall's length (y >= 0) is in scope; every target must sit there.
+    state.survey_bounds = np.array([[-20.0, 0.0], [20.0, 20.0]])
+    targets = find_inspection_targets(state, cm, grid, cfg.planner, cfg.map, components=components)
+    assert targets
+    assert all(f.centroid[1] >= -1e-9 for f in targets)
+
+
+def test_inspected_fraction_is_zero_without_a_surface_seen_mask(cfg: Config) -> None:
+    """No mapper behind the state (``surface_seen=None``) reads 0.0, not a divide-by-zero."""
+    state = MapState(
+        occ=np.full((4, 4, 4), Occ.FREE, dtype=np.uint8), origin=np.zeros(3), voxel=1.0
+    )
+    assert inspected_fraction(state, cfg.map) == 0.0
+
+
+def test_inspected_fraction_is_the_seen_share_of_exposed_ground_band_surface(cfg: Config) -> None:
+    """Half of two exposed, ground-band OCC voxels marked ``surface_seen`` reads 0.5."""
+    occ = np.full((4, 4, 4), Occ.FREE, dtype=np.uint8)
+    occ[1, 1, 0] = Occ.OCC
+    occ[2, 1, 0] = Occ.OCC
+    state = MapState(occ=occ, origin=np.zeros(3), voxel=1.0)
+    state.surface_seen = np.zeros_like(occ, dtype=np.bool_)
+    state.surface_seen[1, 1, 0] = True
+
+    assert inspected_fraction(state, cfg.map) == pytest.approx(0.5)
 
 
 @pytest.mark.slow

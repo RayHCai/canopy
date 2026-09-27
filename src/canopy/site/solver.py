@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import numpy.typing as npt
 
 from canopy.contracts import (
     Cls,
@@ -257,7 +258,7 @@ def _site(
     candidates: Candidates,
     rules: SiteRules,
     outcomes: list[RuleOutcome],
-    cost: np.ndarray,
+    cost: npt.NDArray[np.float64],
     verdict: list[SiteVerdict],
     meter: DiscoveredObject,
     house: HouseOutline,

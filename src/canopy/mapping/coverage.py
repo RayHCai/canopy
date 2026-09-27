@@ -1,4 +1,11 @@
-"""Per-triangle coverage: the grayscale-to-colour reveal and the completion metric.
+"""Per-triangle coverage: the grayscale-to-colour reveal and the coverage score.
+
+This is the simulator grading the swarm, not part of the swarm. It reads each
+scan's ground-truth triangle ids, the mesh's normals and the manifest's
+classes, so it is owned by :class:`~canopy.planning.MissionRun` beside the
+mission and never by the :class:`~canopy.mapping.Mapper` the planner reads
+(ADR 0016). The swarm's own notion of what it has photographed is
+:mod:`canopy.mapping.surface`, judged from its scans alone.
 
 The spec's coverage rule is "a photo-quality hit marks its triangle seen." That
 is exactly right for a wall, which is a handful of large triangles, but wrong
@@ -98,7 +105,10 @@ class CoverageTracker:
         self._newly_seen: list[npt.NDArray[np.int64]] = []
 
         area = geometry.tri_area
-        cls_of_tri = np.array([manifest.objects[o].cls for o in geometry.tri_obj])
+        # Look up each object's class once, then broadcast onto every triangle
+        # via its owning obj_id, instead of a per-triangle Python loop.
+        cls_by_obj = np.array([o.cls for o in manifest.objects])
+        cls_of_tri = cls_by_obj[geometry.tri_obj]
         non_ground = self._counted & (cls_of_tri != Cls.GROUND)
         self._total_area = float(area[non_ground].sum())
 
@@ -177,15 +187,6 @@ class CoverageTracker:
         return ids
 
     @property
-    def seen_voxels(self) -> npt.NDArray[np.bool_]:
-        """Voxels a photo-quality ray has landed in, shape ``(X, Y, Z)``.
-
-        A reshaped view of the tracker's own mask, so it stays current without
-        copying.
-        """
-        return self._seen_voxels.reshape(self._shape)
-
-    @property
     def coverage_total(self) -> float:
         """Seen area over total area of non-background, non-ground triangles."""
         if self._total_area <= 0.0:
@@ -195,7 +196,7 @@ class CoverageTracker:
 
     @property
     def coverage_ground_band(self) -> float:
-        """Seen area over WALL/DOOR/METER/BUSH area in the ground band. The mission metric."""
+        """Seen area over WALL/DOOR/METER/BUSH area in the ground band. The mission score."""
         if self._band_area <= 0.0:
             return 0.0
         seen = self._area[self._band_mask & self.tri_seen].sum()

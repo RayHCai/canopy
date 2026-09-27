@@ -1,4 +1,10 @@
-"""Tests for :mod:`canopy.mapping.mapper`."""
+"""Tests for :mod:`canopy.mapping.mapper`.
+
+The mapper takes only :class:`~canopy.contracts.Observation` -- no manifest, no
+geometry (ADR 0016) -- so every scan here is a hand-built :class:`Scan` fed
+through :meth:`~canopy.contracts.Scan.observation`, exactly as
+:class:`~canopy.planning.MissionRun` hands the mapper a live sweep.
+"""
 
 from __future__ import annotations
 
@@ -6,80 +12,65 @@ import time
 
 import numpy as np
 import numpy.typing as npt
-import pytest
 
 from canopy.config import Config
-from canopy.contracts import Cls, Scan, SceneGeometry, SceneManifest, SceneObject
+from canopy.contracts import Cls, Observation, Scan
 from canopy.mapping.mapper import Mapper
 
-
-def _manifest(lot: npt.NDArray[np.float64], objects: list[SceneObject]) -> SceneManifest:
-    return SceneManifest(
-        seed=0,
-        lot_bounds=lot,
-        footprint=[],
-        objects=objects,
-        home=np.zeros(3),
-        gt_meter_id=-1,
-    )
-
-
-def _geometry() -> SceneGeometry:
-    """One wall triangle, object 0."""
-    return SceneGeometry(
-        vertices=[np.zeros((0, 3))],
-        faces=[np.zeros((0, 3), dtype=np.int32)],
-        obj_tri_offset=np.array([0, 1], dtype=np.int64),
-        tri_obj=np.array([0], dtype=np.int32),
-        tri_normal=np.array([[-1.0, 0.0, 0.0]]),
-        tri_area=np.array([1.0]),
-        tri_centroid=np.array([[2.0, 0.0, 1.0]]),
-    )
+#: Operator envelope covering the synthetic scenes below, shape ``(2, 3)``.
+_ENVELOPE: npt.NDArray[np.float64] = np.array([[-15.0, -20.0, 0.0], [15.0, 20.0, 12.0]])
+_LAUNCH_XY: npt.NDArray[np.float64] = np.array([0.0, 0.0])
 
 
 def _scan(
     origin: npt.NDArray[np.float64],
     dirs: npt.NDArray[np.float64],
     dist: npt.NDArray[np.float64],
-    tri_ids: list[int],
+    *,
+    rgb: npt.NDArray[np.uint8] | None = None,
+    grid_shape: tuple[int, int] | None = None,
+    t: float = 0.0,
 ) -> Scan:
+    """Build a :class:`Scan` with placeholder ground-truth ids the mapper never sees."""
     n = dist.shape[0]
     return Scan(
         drone_id=0,
-        t=0.0,
+        t=t,
         origin=origin,
         dirs=dirs,
         dist=dist,
-        obj_ids=np.zeros(n, dtype=np.int32),
-        tri_ids=np.array(tri_ids, dtype=np.int32),
+        obj_ids=np.full(n, -1, dtype=np.int32),
+        tri_ids=np.full(n, -1, dtype=np.int32),
+        rgb=rgb,
+        grid_shape=grid_shape,
     )
 
 
-def test_version_bumps_only_on_change(cfg: Config, lot: npt.NDArray[np.float64]) -> None:
-    """Repeating the same scan (or nothing new) must not bump ``version``."""
-    wall = SceneObject(obj_id=0, cls=Cls.WALL, mesh_path="", color=(0, 0, 0))
-    manifest = _manifest(lot, [wall])
-    geometry = _geometry()
-    mapper = Mapper(manifest, geometry, cfg)
-    assert mapper.version == 0
-
+def _single_ray_hit() -> Observation:
+    """One ray from ``(0, 0, 1)`` straight at a point 2 m away."""
     origin = np.array([0.0, 0.0, 1.0])
     dirs = np.array([[1.0, 0.0, 0.0]])
-    scan = _scan(origin, dirs, np.array([2.0]), [0])
+    dist = np.array([2.0])
+    return _scan(origin, dirs, dist).observation()
 
-    mapper.integrate(scan)
+
+def test_version_bumps_only_on_change(cfg: Config) -> None:
+    """Repeating the same scan (or nothing new) must not bump ``version``."""
+    mapper = Mapper(cfg, _ENVELOPE, _LAUNCH_XY)
+    assert mapper.version == 0
+
+    obs = _single_ray_hit()
+    mapper.integrate(obs)
     v1 = mapper.version
     assert v1 > 0
 
-    mapper.integrate(scan)
+    mapper.integrate(obs)
     assert mapper.version == v1
 
 
-def test_mark_free_box_bumps_version(cfg: Config, lot: npt.NDArray[np.float64]) -> None:
+def test_mark_free_box_bumps_version(cfg: Config) -> None:
     """Seeding the launch column is itself an occupancy change."""
-    wall = SceneObject(obj_id=0, cls=Cls.WALL, mesh_path="", color=(0, 0, 0))
-    manifest = _manifest(lot, [wall])
-    mapper = Mapper(manifest, _geometry(), cfg)
+    mapper = Mapper(cfg, _ENVELOPE, _LAUNCH_XY)
 
     lo = mapper.state.origin
     hi = lo + np.array([1.0, 1.0, 1.0])
@@ -89,111 +80,86 @@ def test_mark_free_box_bumps_version(cfg: Config, lot: npt.NDArray[np.float64]) 
     assert mapper.version == 1
 
 
-def test_pop_revealed_and_coverage_properties(cfg: Config, lot: npt.NDArray[np.float64]) -> None:
-    """Integrating a good hit reveals the triangle and moves the coverage metrics."""
-    wall = SceneObject(obj_id=0, cls=Cls.WALL, mesh_path="", color=(0, 0, 0))
-    manifest = _manifest(lot, [wall])
-    mapper = Mapper(manifest, _geometry(), cfg)
+def _wall_grid_observation(
+    cfg: Config,
+    *,
+    origin: npt.NDArray[np.float64] | None = None,
+    wall_y: float = 5.0,
+    n_az: int = 32,
+    n_el: int = 9,
+) -> Observation:
+    """Build a synthetic 360-degree sweep of an infinite flat wall at ``y = wall_y``.
 
-    origin = np.array([0.0, 0.0, 1.0])
-    dirs = np.array([[1.0, 0.0, 0.0]])
-    scan = _scan(origin, dirs, np.array([2.0]), [0])
-    mapper.integrate(scan)
-
-    assert mapper.pop_revealed().tolist() == [0]
-    assert mapper.pop_revealed().size == 0
-    assert mapper.coverage_total == 1.0
-    assert mapper.coverage_ground_band == 1.0
-    assert mapper.state.tri_seen[0]
-
-
-def _geometry_with_hidden_triangle() -> SceneGeometry:
-    """Two triangles, object 0: one exterior, one never visible from outside."""
-    return SceneGeometry(
-        vertices=[np.zeros((0, 3))],
-        faces=[np.zeros((0, 3), dtype=np.int32)],
-        obj_tri_offset=np.array([0, 2], dtype=np.int64),
-        tri_obj=np.array([0, 0], dtype=np.int32),
-        tri_normal=np.array([[-1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]]),
-        tri_area=np.array([1.0, 1.0]),
-        tri_centroid=np.array([[2.0, 0.0, 1.0], [2.0, 1.0, 1.0]]),
-        tri_exterior=np.array([True, False]),
-    )
-
-
-def test_hidden_triangle_revealed_but_never_counted(
-    cfg: Config, lot: npt.NDArray[np.float64]
-) -> None:
-    """A good hit reveals a ``tri_exterior=False`` triangle but never counts it.
-
-    ``tri_exterior`` is a one-point heuristic that misfires on faces straddling
-    a wall or buried in a canopy; a hit proves the face visible, so it colours
-    it, while the metrics keep excluding it.
+    Built by ray/plane intersection, not a mesh: exactly the azimuth-major
+    grid layout a real lidar reports (:attr:`~canopy.contracts.Observation.grid_shape`),
+    so :class:`~canopy.mapping.surface.SurfaceTracker` can estimate a normal
+    from each return's neighbours and mark it seen.
     """
-    wall = SceneObject(obj_id=0, cls=Cls.WALL, mesh_path="", color=(0, 0, 0))
-    manifest = _manifest(lot, [wall])
-    mapper = Mapper(manifest, _geometry_with_hidden_triangle(), cfg)
+    origin = np.array([0.0, 0.0, 1.5]) if origin is None else origin
+    az = np.linspace(0.0, 2.0 * np.pi, n_az, endpoint=False)
+    el = np.deg2rad(np.linspace(-45.0, 45.0, n_el))
+    az_grid, el_grid = np.meshgrid(az, el, indexing="ij")
+    dirs = np.stack(
+        [
+            np.cos(el_grid) * np.cos(az_grid),
+            np.cos(el_grid) * np.sin(az_grid),
+            np.sin(el_grid),
+        ],
+        axis=-1,
+    ).reshape(-1, 3)
 
-    origin = np.array([0.0, 0.0, 1.0])
-    dirs = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-    scan = _scan(origin, dirs, np.array([2.0, 2.0]), [0, 1])
-    mapper.integrate(scan)
-
-    assert mapper.pop_revealed().tolist() == [0, 1]
-    np.testing.assert_array_equal(mapper.state.tri_seen, [True, True])
-    # The hidden triangle's area never enters either denominator, so a fully
-    # seen exterior triangle alone reads 100%.
-    assert mapper.coverage_total == pytest.approx(1.0)
-    assert mapper.coverage_ground_band == pytest.approx(1.0)
+    dy = dirs[:, 1]
+    # Only rays pointed usefully at the wall (not near-glancing, which blows up
+    # the intersection distance) count as forward; the rest miss, as they
+    # would if the wall were finite.
+    forward = dy > 0.2
+    dist = np.where(forward, (wall_y - origin[1]) / np.where(forward, dy, 1.0), np.inf)
+    dist = np.where(dist <= cfg.sensor.max_range_m, dist, np.inf)
+    return _scan(origin, dirs, dist, grid_shape=(n_az, n_el)).observation()
 
 
-def test_surface_seen_is_a_live_view_updated_by_integrate(
-    cfg: Config, lot: npt.NDArray[np.float64]
-) -> None:
+def test_surface_seen_is_a_live_view_updated_by_integrate(cfg: Config) -> None:
     """``mapper.state.surface_seen`` shares memory with the tracker: no re-fetch needed."""
-    wall = SceneObject(obj_id=0, cls=Cls.WALL, mesh_path="", color=(0, 0, 0))
-    manifest = _manifest(lot, [wall])
-    mapper = Mapper(manifest, _geometry(), cfg)
+    mapper = Mapper(cfg, _ENVELOPE, _LAUNCH_XY)
 
     surface_seen = mapper.state.surface_seen
     assert surface_seen is not None
     assert surface_seen.shape == mapper.state.occ.shape
     assert not surface_seen.any()
 
-    origin = np.array([0.0, 0.0, 1.0])
-    dirs = np.array([[1.0, 0.0, 0.0]])
-    scan = _scan(origin, dirs, np.array([2.0]), [0])
-    mapper.integrate(scan)
+    mapper.integrate(_wall_grid_observation(cfg))
 
     assert surface_seen.any()
+    assert mapper.state.surface_seen is surface_seen
 
 
-def test_integrate_is_fast(cfg: Config, lot: npt.NDArray[np.float64]) -> None:
-    """Performance target: one 10,800-ray scan integrates in well under 20 ms."""
-    wall = SceneObject(obj_id=0, cls=Cls.WALL, mesh_path="", color=(0, 0, 0))
-    manifest = _manifest(lot, [wall])
-    mapper = Mapper(manifest, _geometry(), cfg)
+def _timed_integrate(mapper: Mapper, obs: Observation) -> float:
+    """Milliseconds for one :meth:`Mapper.integrate` call."""
+    start = time.perf_counter()
+    mapper.integrate(obs)
+    return (time.perf_counter() - start) * 1000.0
 
-    n_rays = cfg.sensor.n_rays
+
+def test_integrate_is_fast(cfg: Config) -> None:
+    """Performance target: one full-size scan integrates in well under 20 ms.
+
+    Grid-shaped so the surface tracker's normal estimation runs too, not just
+    occupancy carving: both are on every real sweep's critical path now.
+    """
+    mapper = Mapper(cfg, _ENVELOPE, _LAUNCH_XY)
+    n_az, n_el = cfg.sensor.az_rays, cfg.sensor.el_rays
+    n_rays = n_az * n_el
     rng = np.random.default_rng(0)
     dirs = rng.normal(size=(n_rays, 3))
     dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
     dist = rng.uniform(0.5, cfg.sensor.max_range_m, size=n_rays)
-    tri_ids = np.full(n_rays, -1, dtype=np.int32)
-    scan = _scan(np.zeros(3), dirs, dist, tri_ids.tolist())
+    obs = _scan(np.zeros(3), dirs, dist, grid_shape=(n_az, n_el)).observation()
 
     # Best-of-N: a shared test box under load has enough scheduling noise to
     # spike any one run well past its true cost, so take the fastest of a
     # handful rather than a single sample.
-    best_ms = min(_timed_integrate(mapper, scan) for _ in range(5))
+    best_ms = min(_timed_integrate(mapper, obs) for _ in range(5))
     assert best_ms < 20.0, f"integrate took {best_ms:.2f} ms"
-
-
-def _timed_integrate(mapper: Mapper, scan: Scan) -> float:
-    """Milliseconds for one :meth:`Mapper.integrate` call."""
-    start = time.perf_counter()
-    mapper.integrate(scan)
-    return (time.perf_counter() - start) * 1000.0
 
 
 def _meter_on_wall_scan(t: float, *, coloured: bool) -> Scan:
@@ -218,35 +184,30 @@ def _meter_on_wall_scan(t: float, *, coloured: bool) -> Scan:
     origin = np.array([0.0, 2.0, 1.5])
     ray = points - origin
     dist = np.linalg.norm(ray, axis=1)
-    n = len(points)
-    return Scan(
-        drone_id=0,
-        t=t,
-        origin=origin,
-        dirs=ray / dist[:, None],
-        dist=dist,
-        obj_ids=np.zeros(n, dtype=np.int32),
-        tri_ids=np.full(n, -1, dtype=np.int32),
+    return _scan(
+        origin,
+        ray / dist[:, None],
+        dist,
         rgb=colour.astype(np.uint8) if coloured else None,
+        t=t,
     )
 
 
-def test_discovered_comes_from_coloured_scans(cfg: Config, lot: npt.NDArray[np.float64]) -> None:
+def test_discovered_comes_from_coloured_scans(cfg: Config) -> None:
     """The mapper publishes what its detector finds, replacing ``discovered``, never mutating it.
 
     Colourless scans leave nothing to classify. Objects are re-extracted on
     the first scan due each ``1 / perception.extract_hz`` seconds of scan time.
     """
-    wall = SceneObject(obj_id=0, cls=Cls.WALL, mesh_path="", color=(0, 0, 0))
-    mapper = Mapper(_manifest(lot, [wall]), _geometry(), cfg)
+    mapper = Mapper(cfg, _ENVELOPE, _LAUNCH_XY)
 
-    mapper.integrate(_meter_on_wall_scan(0.0, coloured=False))
+    mapper.integrate(_meter_on_wall_scan(0.0, coloured=False).observation())
     assert mapper.state.discovered == {}
     empty = mapper.state.discovered
 
     period = 1.0 / cfg.perception.extract_hz
     for step in range(1, 6):
-        mapper.integrate(_meter_on_wall_scan(step * period / 5.0, coloured=True))
+        mapper.integrate(_meter_on_wall_scan(step * period / 5.0, coloured=True).observation())
     found = mapper.state.discovered
     assert found is not empty
     assert empty == {}

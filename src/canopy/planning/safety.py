@@ -49,14 +49,16 @@ FloatGrid = npt.NDArray[np.float64]
 _TOLERANCE_M = 1e-9
 
 
-def geofence_box(lot_bounds: npt.NDArray[np.float64], cfg: SafetyCfg) -> npt.NDArray[np.float64]:
+def geofence_box(envelope: npt.NDArray[np.float64], cfg: SafetyCfg) -> npt.NDArray[np.float64]:
     """Box the drone *centre* must stay inside, shape ``(2, 3)``.
 
-    The lot shrunk horizontally by ``geofence_inset_m`` and capped at
-    ``ceiling_m``. There is no floor: the ground is an obstacle in the map, and
-    a floor here would put the launch pad at ``z = 0`` outside the fence.
+    The operator's envelope (:func:`canopy.mapping.survey_envelope`), never
+    the lot, which the swarm is not told. It is shrunk horizontally by
+    ``geofence_inset_m`` and capped at ``ceiling_m``. There is no floor: the
+    ground is an obstacle in the map, and a floor here would put the launch
+    pad at ``z = 0`` outside the fence.
     """
-    bounds = np.asarray(lot_bounds, dtype=np.float64)
+    bounds = np.asarray(envelope, dtype=np.float64)
     inset = cfg.geofence_inset_m
     return np.array(
         [

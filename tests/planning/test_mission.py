@@ -19,6 +19,7 @@ import pytest
 
 from canopy.config import Config
 from canopy.contracts import Cls, DroneState, MapState, SceneManifest, SceneObject
+from canopy.mapping import survey_envelope
 from canopy.planning.mission import MissionController, Phase
 from canopy.planning.run import MissionRun
 from canopy.planning.safety import geofence_box
@@ -215,7 +216,7 @@ def test_mission_explores_and_returns_safely(cfg: Config, tmp_path: Path, n_dron
     geometry = load_geometry(manifest)
     run = MissionRun(manifest, geometry, n_drones, cfg, seed=0)
 
-    fence = geofence_box(manifest.lot_bounds, cfg.safety)
+    fence = geofence_box(survey_envelope(run.pads, cfg), cfg.safety)
     xy_lo, xy_hi = fence[0, :2], fence[1, :2]
     #: Above this height a drone counts as "airborne": clear of the ground
     #: margin and of the launch column's recovery allowance.
@@ -257,8 +258,8 @@ def test_mission_explores_and_returns_safely(cfg: Config, tmp_path: Path, n_dron
                     f"t={run.t:.2f}: separation violated, min={dists[iu].min():.3f}"
                 )
 
-        ground_now = run.mapper.coverage_ground_band
-        total_now = run.mapper.coverage_total
+        ground_now = run.coverage_ground_band
+        total_now = run.coverage_total
         assert ground_now >= prev_ground - 1e-9
         assert total_now >= prev_total - 1e-9
         prev_ground, prev_total = ground_now, total_now
@@ -397,7 +398,7 @@ def test_surplus_drone_idles_then_returns_home_mid_explore(
     surplus_id: int | None = None
     for _ in range(6000):
         live = list(states.values())
-        targets = controller.step(t, live, map_state, map_version=1, coverage_ground_band=0.0)
+        targets = controller.step(t, live, map_state, map_version=1)
         states = _fly_toward_targets(states, targets, dt, v_max)
         t += dt
 
@@ -453,9 +454,7 @@ def test_standoff_on_the_way_home_is_broken_and_both_land(
                 i: replace(s, pos=standoff[i].copy(), vel=np.zeros(3)) for i, s in states.items()
             }
             teleported = True
-        targets = controller.step(
-            t, list(states.values()), map_state, map_version=1, coverage_ground_band=0.0
-        )
+        targets = controller.step(t, list(states.values()), map_state, map_version=1)
         states = _fly_toward_targets(states, targets, dt, cfg.sim.v_max)
         t += dt
         if controller.done:

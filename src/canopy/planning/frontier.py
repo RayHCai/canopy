@@ -3,7 +3,11 @@
 A frontier is a cluster of FREE voxels touching the unknown, reachable by some
 live drone and worth a viewpoint. Everything here is array ops over the whole
 map grid -- the FRONTIER state runs once per replan (1 Hz), and the map can be
-120x160x48 voxels, so a per-voxel Python loop would blow the tick budget.
+200x176x48 voxels, so a per-voxel Python loop would blow the tick budget.
+
+Both kinds of target are kept inside the geofence and, once the mapper has
+found the house, inside ``MapState.survey_bounds``: the envelope takes in the
+neighbours and the street, and a frontier there is real but not the job.
 """
 
 from __future__ import annotations
@@ -24,7 +28,13 @@ from canopy.planning.safety import ClearanceMap
 if TYPE_CHECKING:
     from canopy.config import MapCfg, PlannerCfg
 
-__all__ = ["Frontier", "find_frontiers", "find_inspection_targets", "frontier_voxels"]
+__all__ = [
+    "Frontier",
+    "find_frontiers",
+    "find_inspection_targets",
+    "frontier_voxels",
+    "inspected_fraction",
+]
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -46,7 +56,7 @@ class Frontier:
 def frontier_voxels(
     state: MapState, clearance: ClearanceMap, planner: PlannerCfg
 ) -> npt.NDArray[np.bool_]:
-    """FREE voxels with an UNKNOWN 6-neighbour, fenced and above ``frontier_min_z_m``.
+    """FREE voxels with an UNKNOWN 6-neighbour, in scope and above ``frontier_min_z_m``.
 
     Parameters
     ----------
@@ -74,7 +84,7 @@ def frontier_voxels(
 
     above_min_z = _axis_centres(state)[2] >= planner.frontier_min_z_m
     result: npt.NDArray[np.bool_] = (
-        candidate & _in_fence(state, clearance) & above_min_z[None, None, :]
+        candidate & _in_scope(state, clearance) & above_min_z[None, None, :]
     )
     return result
 
@@ -112,17 +122,60 @@ def _axis_centres(state: MapState) -> list[npt.NDArray[np.float64]]:
     return [state.origin[a] + (np.arange(shape[a]) + 0.5) * state.voxel for a in range(3)]
 
 
-def _in_fence(state: MapState, clearance: ClearanceMap) -> npt.NDArray[np.bool_]:
-    """Whether each voxel centre lies inside the geofence, shape like ``state.occ``.
+def _in_scope(state: MapState, clearance: ClearanceMap | None) -> npt.NDArray[np.bool_]:
+    """Whether each voxel centre is in the geofence and the survey region, shape like ``occ``.
 
-    The fence is a box, so the test separates into one 1-D test per axis.
+    Both are boxes, so the test separates into one 1-D test per axis. No
+    ``clearance`` skips the fence; no ``state.survey_bounds`` skips the region.
     """
-    x, y, z = (
-        (c >= clearance.geofence[0, a]) & (c <= clearance.geofence[1, a])
-        for a, c in enumerate(_axis_centres(state))
-    )
+    lo = np.full(3, -np.inf)
+    hi = np.full(3, np.inf)
+    if clearance is not None:
+        lo, hi = clearance.geofence[0].copy(), clearance.geofence[1].copy()
+    if state.survey_bounds is not None:
+        lo[:2] = np.maximum(lo[:2], state.survey_bounds[0])
+        hi[:2] = np.minimum(hi[:2], state.survey_bounds[1])
+    x, y, z = ((c >= lo[a]) & (c <= hi[a]) for a, c in enumerate(_axis_centres(state)))
     inside: npt.NDArray[np.bool_] = x[:, None, None] & y[None, :, None] & z[None, None, :]
     return inside
+
+
+def _exposed(
+    state: MapState,
+) -> tuple[npt.NDArray[np.bool_], list[tuple[int, int, npt.NDArray[np.bool_]]]]:
+    """Occupied voxels with a FREE face neighbour, and the six shifted FREE masks behind that."""
+    faces = list(_neighbours(state.occ == Occ.FREE))
+    exposed = np.zeros(state.occ.shape, dtype=np.bool_)
+    for _, _, free_there in faces:
+        exposed |= free_there
+    exposed &= state.occ == Occ.OCC
+    return exposed, faces
+
+
+def inspected_fraction(state: MapState, map_cfg: MapCfg) -> float:
+    """Estimate ground-band coverage from the swarm's own map, in ``[0, 1]``.
+
+    Mapped surface -- occupied and exposed -- below ``map_cfg.ground_band_max_z_m``
+    and inside the survey region, and the share of it ``surface_seen`` marks.
+    It stands in for the simulator's triangle score, which the swarm cannot
+    read, wherever a decision needs "how much is done".
+
+    Parameters
+    ----------
+    state
+        The shared map. ``0.0`` when it has no ``surface_seen`` or no surface.
+    map_cfg
+        Supplies ``ground_band_max_z_m``.
+    """
+    if state.surface_seen is None:
+        return 0.0
+    exposed, _ = _exposed(state)
+    low = _axis_centres(state)[2] < map_cfg.ground_band_max_z_m
+    surface = exposed & low[None, None, :] & _in_scope(state, None)
+    total = int(np.count_nonzero(surface))
+    if total == 0:
+        return 0.0
+    return float(np.count_nonzero(surface & state.surface_seen)) / total
 
 
 def _eligible_viewpoints(grid: PlanningGrid, components: Collection[int]) -> Points:
@@ -290,12 +343,8 @@ def find_inspection_targets(
     """
     if state.surface_seen is None:
         return []
-    free = state.occ == Occ.FREE
-    faces = list(_neighbours(free))
-    exposed = np.zeros_like(free)
-    for _, _, free_there in faces:
-        exposed |= free_there
-    target = (state.occ == Occ.OCC) & exposed & ~state.surface_seen & _in_fence(state, clearance)
+    exposed, faces = _exposed(state)
+    target = exposed & ~state.surface_seen & _in_scope(state, clearance)
     if not np.any(target):
         return []
 
