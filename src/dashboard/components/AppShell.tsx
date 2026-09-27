@@ -1,4 +1,3 @@
-import { Today } from "@/components/Today";
 import { CanopyMark } from "@/components/ui/glyphs";
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -21,10 +20,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               Canopy
             </span>
           </Link>
-          <span className="type-eyebrow hidden text-ink-3 sm:inline">
-            Site survey review
-          </span>
-          <Today className="type-eyebrow ml-auto text-ink-3" />
         </div>
         <div className="masthead-rule h-px bg-rule" />
       </header>

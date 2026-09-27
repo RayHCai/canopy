@@ -47,6 +47,9 @@ export const blockerTag: Record<BlockerType, string> = {
   "Gas Meter": "Gas meter clearance",
   "Unreadable Label": "New label photo",
   "Existing Solar/Generator": "Existing solar/generator review",
+  "Window or Door": "Window/door clearance",
+  "Fence or Structure": "Fence/structure clearance",
+  Clearance: "Clearance work",
 };
 
 /** One tag per kind of work, most severe first. */

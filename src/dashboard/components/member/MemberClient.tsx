@@ -8,7 +8,6 @@ import { Step } from "@/components/member/Step";
 import { delay, prefersReducedMotion } from "@/components/ui/motion";
 import { buildMemberEmail, includesBlockers } from "@/lib/buildMemberEmail";
 import { firstName as firstNameOf, plural, splitOptionLabel } from "@/lib/format";
-import { loadReport } from "@/lib/loadReport";
 import { useMemberSession } from "@/lib/memberSession";
 import { sendEmail } from "@/lib/sendEmail";
 import type { BlockerPhoto, DroneReport, Member, PlacementPhoto } from "@/lib/types";
@@ -108,10 +107,10 @@ function MobileSendBar({ text, sent }: { text: string; sent: boolean }) {
 }
 
 function Review({ member, report }: { member: Member; report: DroneReport }) {
-  const { members, sent, markEmailSent } = useMemberSession();
-  const sentEmail = sent[member.id] ?? null;
+  const { members, markEmailSent } = useMemberSession();
+  const sentEmail = member.sent;
   const [placementId, setPlacementId] = useState<string | null>(
-    sentEmail?.placementPhotoId ?? null,
+    sentEmail?.placementPhotoId ?? report.recommendation?.placementPhotoId ?? null,
   );
   const [includedIds, setIncludedIds] = useState<Set<string>>(
     () => new Set(sentEmail?.blockerPhotoIds ?? []),
@@ -123,9 +122,20 @@ function Review({ member, report }: { member: Member; report: DroneReport }) {
   const first = firstNameOf(member.name);
 
   const placement = report.placementPhotos.find((p) => p.id === placementId) ?? null;
+  // Only what stands in the way at the chosen site matters to this member, so
+  // blockers follow the placement; a pick at another site drops out with it.
+  const siteReport = useMemo(
+    () => ({
+      ...report,
+      blockerPhotos: placement
+        ? report.blockerPhotos.filter((p) => p.siteRank === placement.siteRank)
+        : [],
+    }),
+    [report, placement],
+  );
   const included = useMemo(
-    () => report.blockerPhotos.filter((p) => includedIds.has(p.id)),
-    [report.blockerPhotos, includedIds],
+    () => siteReport.blockerPhotos.filter((p) => includedIds.has(p.id)),
+    [siteReport.blockerPhotos, includedIds],
   );
   const draft = useMemo(
     () => (placement ? buildMemberEmail(member, placement, included) : null),
@@ -159,16 +169,16 @@ function Review({ member, report }: { member: Member; report: DroneReport }) {
     setPhase("sending");
     try {
       await sendEmail(draft);
+      await markEmailSent(member.id, {
+        subject: draft.subject,
+        approved: !includesBlockers(included),
+        placementPhotoId: placement.id,
+        blockerPhotoIds: included.map((p) => p.id),
+      });
     } catch {
       setPhase("error");
       return;
     }
-    markEmailSent(member.id, {
-      subject: draft.subject,
-      approved: !includesBlockers(included),
-      placementPhotoId: placement.id,
-      blockerPhotoIds: included.map((p) => p.id),
-    });
     setStampNow(true);
     setPhase("idle");
   };
@@ -204,6 +214,7 @@ function Review({ member, report }: { member: Member; report: DroneReport }) {
                 photos={report.placementPhotos}
                 selectedId={placementId}
                 locked={locked}
+                recommendation={report.recommendation}
                 onSelect={choosePlacement}
               />
             </Step>
@@ -216,18 +227,27 @@ function Review({ member, report }: { member: Member; report: DroneReport }) {
               meta={
                 sentEmail
                   ? "Sent · locked"
-                  : report.blockerPhotos.length > 0
-                    ? "Optional · include any"
-                    : "Nothing flagged"
+                  : !placement
+                    ? "Choose a placement first"
+                    : siteReport.blockerPhotos.length > 0
+                      ? "Optional · include any"
+                      : "Nothing flagged"
               }
             >
-              <BlockerReview
-                firstName={first}
-                photos={report.blockerPhotos}
-                includedIds={includedIds}
-                locked={locked}
-                onToggle={toggleBlockerPhoto}
-              />
+              {placement ? (
+                <BlockerReview
+                  key={placement.siteRank}
+                  firstName={first}
+                  photos={siteReport.blockerPhotos}
+                  includedIds={includedIds}
+                  locked={locked}
+                  onToggle={toggleBlockerPhoto}
+                />
+              ) : (
+                <p className="border-t border-rule py-6 text-[17px] text-ink-3">
+                  Blockers show up here for the site you choose in step 01.
+                </p>
+              )}
             </Step>
           </div>
         </div>
@@ -235,7 +255,7 @@ function Review({ member, report }: { member: Member; report: DroneReport }) {
         <LetterPane
           member={member}
           firstName={first}
-          report={report}
+          report={siteReport}
           placement={placement}
           included={included}
           includedIds={includedIds}
@@ -252,17 +272,6 @@ function Review({ member, report }: { member: Member; report: DroneReport }) {
 
       <MobileSendBar text={barText} sent={sentEmail !== null} />
     </>
-  );
-}
-
-function ReportLoading() {
-  return (
-    <div role="status" className="anim-fade mt-14">
-      <p className="type-eyebrow text-ink-3">Loading the survey report</p>
-      <div className="mt-4 h-[2px] overflow-hidden bg-rule">
-        <div className="h-full w-1/3 animate-[sweep_1.3s_var(--ease-swift)_infinite] bg-ink" />
-      </div>
-    </div>
   );
 }
 
@@ -291,29 +300,18 @@ function NoReport() {
 }
 
 export function MemberClient({ initialMember }: { initialMember: Member }) {
-  const { getMember, sent } = useMemberSession();
+  const { getMember } = useMemberSession();
+  // The session's own poll may not have this member yet (it was just opened
+  // from a fresh server fetch); fall back to what the page already fetched.
   const member = getMember(initialMember.id) ?? initialMember;
-  const [report, setReport] = useState<DroneReport | null | undefined>(undefined);
-
-  useEffect(() => {
-    let cancelled = false;
-    loadReport(member.id).then((r) => {
-      if (!cancelled) setReport(r);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [member.id]);
 
   return (
     <>
-      <MemberHeader member={member} sentEmail={sent[member.id] ?? null} />
-      {report === undefined ? (
-        <ReportLoading />
-      ) : report === null ? (
-        <NoReport />
+      <MemberHeader member={member} sentEmail={member.sent} />
+      {member.report ? (
+        <Review key={member.id} member={member} report={member.report} />
       ) : (
-        <Review key={member.id} member={member} report={report} />
+        <NoReport />
       )}
     </>
   );

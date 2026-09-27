@@ -125,7 +125,7 @@ function nudgesFor({
   const nudges: { id: string; tone: "critical" | "warning"; text: string }[] = [];
   if (!placement) return nudges;
 
-  if (!placement.clearancePass) {
+  if (placement.verdict === "reject") {
     const { option } = splitOptionLabel(placement.label);
     nudges.push({
       id: "clearance",
@@ -133,6 +133,15 @@ function nudgesFor({
       text: sent
         ? `${option} failed the clearance check, and the email recommended it.`
         : `${option} failed the clearance check. The email will still recommend it.`,
+    });
+  } else if (placement.verdict === "manual_review") {
+    const { option } = splitOptionLabel(placement.label);
+    nudges.push({
+      id: "clearance",
+      tone: "warning",
+      text: sent
+        ? `${option} needed a reviewer's sign-off on clearance, and the email recommended it.`
+        : `${option} needs your sign-off on clearance before the email recommends it.`,
     });
   }
 

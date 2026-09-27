@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckGlyph, CrossGlyph } from "@/components/ui/glyphs";
+import { CheckGlyph, CrossGlyph, WarnGlyph } from "@/components/ui/glyphs";
 import { SurveyPhoto, Viewfinder } from "@/components/ui/SurveyPhoto";
 import { splitOptionLabel } from "@/lib/format";
 import type { PlacementPhoto } from "@/lib/types";
@@ -27,17 +27,25 @@ export function PlacementChooser({
   photos,
   selectedId,
   locked,
+  recommendation,
   onSelect,
 }: {
   name: string;
   photos: PlacementPhoto[];
   selectedId: string | null;
   locked: boolean;
+  recommendation: { placementPhotoId: string; reason: string } | null;
   onSelect: (photo: PlacementPhoto, photoEl: HTMLElement | null) => void;
 }) {
   return (
     <fieldset disabled={locked} className="min-w-0">
       <legend className="sr-only">Battery and disconnect placement</legend>
+      {recommendation ? (
+        <p className="-mt-4 mb-10 max-w-[68ch] border-l-2 border-signal pl-4 text-[16px] leading-relaxed text-ink-2">
+          <span className="type-eyebrow mb-1.5 block text-signal">Swarm recommends</span>
+          {recommendation.reason}
+        </p>
+      ) : null}
       <div
         className={`grid gap-x-10 gap-y-14 ${
           photos.length > 1 ? "sm:grid-cols-2" : "max-w-[620px]"
@@ -81,7 +89,13 @@ export function PlacementChooser({
                     proposals={photo.placementBoxes}
                     eager={i < 2}
                   >
-                    {!photo.clearancePass ? (
+                    {photo.recommended ? (
+                      <span className="type-eyebrow absolute left-3 top-3 inline-flex items-center gap-1.5 bg-signal px-2 py-1 text-white">
+                        <CheckGlyph className="h-3 w-3" strokeWidth={2.4} />
+                        Recommended
+                      </span>
+                    ) : null}
+                    {photo.verdict === "reject" ? (
                       <span className="type-eyebrow absolute right-3 top-3 inline-flex items-center gap-1.5 bg-critical px-2 py-1 text-white">
                         <CrossGlyph className="h-3 w-3" strokeWidth={2.4} />
                         Fails clearance
@@ -109,10 +123,16 @@ export function PlacementChooser({
                     <div>
                       <dt className="sr-only">Clearance</dt>
                       <dd className="flex items-center gap-1.5">
-                        {photo.clearancePass ? (
+                        {/* A manual-review site has not failed clearance; it needs a person to confirm it. */}
+                        {photo.verdict === "pass" ? (
                           <>
                             <CheckGlyph className="h-3.5 w-3.5 text-good" strokeWidth={2.2} />
                             <span className="text-good-ink">Clearance passes</span>
+                          </>
+                        ) : photo.verdict === "manual_review" ? (
+                          <>
+                            <WarnGlyph className="h-3.5 w-3.5 text-warning" strokeWidth={2.2} />
+                            <span className="text-warning-ink">Clearance needs review</span>
                           </>
                         ) : (
                           <>
@@ -123,6 +143,11 @@ export function PlacementChooser({
                       </dd>
                     </div>
                   </dl>
+                  {photo.summary ? (
+                    <p className="mt-3 max-w-[52ch] text-[15px] leading-relaxed text-ink-2">
+                      {photo.summary}
+                    </p>
+                  ) : null}
                 </div>
               </div>
             </label>

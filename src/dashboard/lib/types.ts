@@ -10,7 +10,10 @@ export type BlockerType =
   | "Communications Box"
   | "Obstructed Meter"
   | "Unreadable Label"
-  | "Existing Solar/Generator";
+  | "Existing Solar/Generator"
+  | "Window or Door"
+  | "Fence or Structure"
+  | "Clearance";
 
 export type BlockerSeverity = "High" | "Medium" | "Low";
 
@@ -45,6 +48,9 @@ export interface PlacementOverlay {
   label: string;
 }
 
+/** The site stage's own outcome for a candidate site (ADR: per-rule measures, three-way verdict). */
+export type PlacementVerdict = "pass" | "manual_review" | "reject";
+
 export interface PlacementPhoto {
   id: string;
   imageUrl: string;
@@ -52,12 +58,21 @@ export interface PlacementPhoto {
   distanceToMeterFt: number;
   clearancePass: boolean;
   placementBoxes: PlacementOverlay[];
+  verdict: PlacementVerdict;
+  /** Whether this is the site the API's analysis recommended. */
+  recommended: boolean;
+  /** LLM or deterministic prose over the rule facts for this site. */
+  summary: string;
+  /** The candidate site this photo shows; matches `BlockerPhoto.siteRank`. */
+  siteRank: number;
 }
 
 export interface BlockerPhoto {
   id: string;
   imageUrl: string;
   blockers: Blocker[];
+  /** Which candidate site (1-indexed, matches PlacementPhoto option order) this photo is at. */
+  siteRank: number;
 }
 
 export interface Drone {
@@ -84,11 +99,30 @@ export interface FleetEvent {
   targetTask?: string;
 }
 
+/** Facts about the run itself, independent of any one candidate site. */
+export interface RunSummary {
+  seed: number;
+  droneCount: number;
+  simDurationS: number;
+  /** Simulated seconds until the swarm considered the house mapped; null if it never did. */
+  mappedAtS: number | null;
+  coverageTotal: number;
+  coverageGround: number;
+  verdict: string | null;
+  justification: string | null;
+  startedAt: string;
+  /** "address" surveyed the member's real house; "random" flew a generated stand-in. */
+  addressMode: "random" | "address";
+}
+
 export interface DroneReport {
   drones: Drone[];
   events: FleetEvent[];
   placementPhotos: PlacementPhoto[];
   blockerPhotos: BlockerPhoto[];
+  recommendation: { placementPhotoId: string; reason: string } | null;
+  video: { url: string } | null;
+  run: RunSummary;
 }
 
 export interface Member {
@@ -97,7 +131,9 @@ export interface Member {
   address: string;
   email: string;
   reportStatus: ReportStatus;
+  createdAt: string;
   report: DroneReport | null;
+  sent: SentEmail | null;
 }
 
 export interface MemberEmailDraft {
