@@ -13,6 +13,10 @@ Default swarm (``viewer.drones`` in the config)::
 Five drones, reproducible layout, web inspector enabled::
 
     canopy-view --drones 5 --seed 42 --debug
+
+A property rebuilt from a saved address, fetched earlier with ``canopy-site``::
+
+    canopy-view --site out/sites/3f9a2c1e0b7d
 """
 
 from __future__ import annotations
@@ -23,9 +27,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from canopy import log
+from canopy.cli._common import add_verbosity_args, configure_logging
 from canopy.config import load_config
 from canopy.errors import CanopyError
 from canopy.viz import ViewerSession, launch
+from canopy.worldgen import load_snapshot
 
 __all__ = ["build_parser", "main"]
 
@@ -53,20 +59,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="swarm size at launch (default: from config)",
     )
     parser.add_argument("--seed", type=int, default=None, help="scene seed (default: random)")
+    parser.add_argument(
+        "--site",
+        default=None,
+        metavar="REF",
+        help=(
+            "load a saved site snapshot (a snapshot.json path, its directory, or a bare "
+            "site id under out/sites) and start in address mode, built from it"
+        ),
+    )
     parser.add_argument("--debug", action="store_true", help="enable the web inspector")
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="repeat for DEBUG")
-    parser.add_argument("-q", "--quiet", action="store_true", help="warnings only")
+    add_verbosity_args(parser)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point. Returns a process exit status."""
     args = build_parser().parse_args(argv)
-    log.configure(-1 if args.quiet else args.verbose)
+    configure_logging(args)
 
     try:
-        session = ViewerSession(load_config(args.config), drones=args.drones, seed=args.seed)
-        _log.info("opening viewer: %d drone(s), seed=%d", session.n_drones, session.seed)
+        site = load_snapshot(args.site) if args.site is not None else None
+        session = ViewerSession(
+            load_config(args.config), drones=args.drones, seed=args.seed, site=site
+        )
+        _log.info(
+            "opening viewer: %d drone(s), seed=%d%s",
+            session.n_drones,
+            session.seed,
+            "" if site is None else f", site={site.site_id}",
+        )
         launch(session, debug=args.debug)
     except CanopyError as exc:
         _log.error("%s", exc)

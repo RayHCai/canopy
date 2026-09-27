@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from canopy import log
+from canopy.cli._common import add_verbosity_args, configure_logging
 from canopy.config import Config, load_config
 from canopy.contracts import DroneState
 from canopy.errors import CanopyError
@@ -211,8 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--radius", type=float, default=None, metavar="M", help="orbit radius")
     parser.add_argument("--altitude", type=float, default=None, metavar="M", help="orbit altitude")
     parser.add_argument("--json", action="store_true", help="print the summary as JSON")
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="repeat for DEBUG")
-    parser.add_argument("-q", "--quiet", action="store_true", help="warnings only")
+    add_verbosity_args(parser)
     return parser
 
 
@@ -234,7 +234,7 @@ def _apply_overrides(cfg: Config, args: argparse.Namespace) -> Config:
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point. Returns a process exit status."""
     args = build_parser().parse_args(argv)
-    log.configure(-1 if args.quiet else args.verbose)
+    configure_logging(args)
 
     try:
         cfg = _apply_overrides(load_config(args.config), args)
