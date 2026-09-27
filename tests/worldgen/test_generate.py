@@ -13,8 +13,8 @@ from canopy.config import Config
 from canopy.contracts import Cls, SceneManifest
 from canopy.sim import load_geometry
 from canopy.worldgen import launch_pads
-from canopy.worldgen.assets import load_library
 from canopy.worldgen.generate import generate_field, load_manifest, save_manifest
+from canopy.worldgen.index_schema import load_library
 
 _SEEDS = (1, 7, 42)
 #: Cells in the neighbour ``lots`` grid in ``assets/models/index.yaml``.

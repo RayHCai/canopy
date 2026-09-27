@@ -21,33 +21,62 @@ The design decision worth knowing before reading on: *what* gets placed and
 material-to-class mapping live in ``assets/models/index.yaml``; only a new kind
 of placement is code. See :mod:`canopy.worldgen.assets` and
 :mod:`canopy.worldgen.placement`.
+
+Given a :class:`~canopy.contracts.SiteSnapshot`, the same walk rebuilds a real
+property: the snapshot's lot replaces the configured one, the rules place what
+the map data observed where it stands, and they draw the rest as usual. Hard
+rules (:mod:`canopy.worldgen.invariants`) are checked as each role is placed,
+on either kind of property. See ``docs/adr/0015-address-seeded-sites.md``.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+import canopy.worldgen.background as _background_rules
+import canopy.worldgen.equipment as _equipment_rules
+import canopy.worldgen.house as _house_rules
 from canopy.config import load_config
-from canopy.contracts import Cls, MaterialRun, Points, SceneManifest, SceneObject, Vec3
+from canopy.contracts import (
+    Cls,
+    MaterialRun,
+    Points,
+    Provenance,
+    SceneManifest,
+    SceneObject,
+    Vec3,
+)
 from canopy.errors import AssetError, WorldgenError
 from canopy.log import get_logger
+from canopy.worldgen import invariants
 from canopy.worldgen import placement as rules
-from canopy.worldgen.assets import AssetLibrary, load_library
+from canopy.worldgen.assets import AssetLibrary
+from canopy.worldgen.evidence import site_evidence
+from canopy.worldgen.index_schema import load_library
 
 if TYPE_CHECKING:
     from canopy.config import Config
+    from canopy.contracts import SiteSnapshot
     from canopy.worldgen.assets import BuiltMesh, RoleSpec
+    from canopy.worldgen.evidence import SiteEvidence
     from canopy.worldgen.placement import HouseFrame, Placement
 
 __all__ = ["generate_field", "launch_pads", "load_manifest", "save_manifest"]
 
 _log = get_logger(__name__)
+
+#: The placement rule families. A rule exists only once its module has run its
+#: ``@register_rule`` decorators, and generation looks rules up by name, so
+#: holding the modules here is what guarantees they are imported. Aliased
+#: because a placed house is called ``house`` throughout this module.
+_RULE_FAMILIES = (_background_rules, _equipment_rules, _house_rules)
 
 #: Triangle budget from spec.md Module 1. Exceeding it is logged, not fatal:
 #: a heavy scene still flies, it just costs frame time.
@@ -75,6 +104,14 @@ _OPENING_REACH_M = 0.5
 #: Two stretches of opening closer than this along a wall are one opening: the
 #: pieces of one window frame touch, or overlap, rather than leave a gap.
 _OPENING_MERGE_M = 0.01
+
+#: North on a seed-only property, which has no geography: +y, the contract's
+#: default for :attr:`~canopy.contracts.SceneManifest.north_rad`.
+_SEED_NORTH_RAD = math.pi / 2.0
+
+#: Clearance kept around a mapped tree's trunk by every role placed before the
+#: trees are: the authored trunks are about 0.3 m across, plus a margin.
+_MAPPED_TRUNK_RADIUS_M = 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -109,15 +146,17 @@ def generate_field(
     *,
     out_dir: Path | str | None = None,
     library: AssetLibrary | None = None,
+    site: SiteSnapshot | None = None,
 ) -> SceneManifest:
-    """Build one random residential property and write its meshes.
+    """Build one residential property -- random, or a real one -- and write its meshes.
 
     Parameters
     ----------
     seed
         Everything random on the surveyed lot derives from this; background
         scenery does not vary with it. The same seed and the same library
-        produce byte-identical output.
+        produce byte-identical output. With a ``site``, the seed draws only
+        what the map data did not observe.
     cfg
         Configuration. Defaults to the shipped ``config/default.yaml``.
     out_dir
@@ -126,6 +165,11 @@ def generate_field(
         same object ids are overwritten.
     library
         Model library. Defaults to the shipped ``assets/models/index.yaml``.
+    site
+        A real address's frozen map data, from :func:`~canopy.worldgen.fetch_site`
+        or :func:`~canopy.worldgen.load_snapshot`. Its lot replaces
+        ``worldgen.lot_m``, and ``out_dir`` defaults to
+        ``out/scenes/site-<site_id>/<seed>`` instead.
 
     Returns
     -------
@@ -139,10 +183,20 @@ def generate_field(
         If a role names an unknown rule or config field, if the house does not
         fit the lot, or if no electric meter was placed -- a property without
         one has no mission.
+    SiteRejectedError
+        If ``site`` holds a house the generator cannot rebuild, or one no
+        redraw can fit a meter to.
     AssetError
         If the library or one of its mesh files is malformed.
     """
     cfg = cfg if cfg is not None else load_config()
+    evidence: SiteEvidence | None = None
+    if site is not None:
+        evidence = site_evidence(site, cfg.worldgen.site)
+        # Every rule that sizes anything from the lot reads worldgen.lot_m, so
+        # the real lot replaces the configured one rather than being threaded
+        # through each rule on its own.
+        cfg = dataclasses.replace(cfg, worldgen=dataclasses.replace(cfg.worldgen, lot_m=site.lot_m))
     library = library if library is not None else load_library()
     rng = np.random.default_rng(seed)
     background_rng = np.random.default_rng(_BACKGROUND_SEED)
@@ -165,6 +219,8 @@ def generate_field(
     house: HouseFrame | None = None
     meter: Placement | None = None
     obstacles: list[rules.Obstacle] = list(launch_area)
+    if evidence is not None:
+        obstacles.extend(evidence.lot_obstacles(lot_bounds, _MAPPED_TRUNK_RADIUS_M))
     placed: list[Placement] = []
 
     for role in library.roles:
@@ -184,13 +240,18 @@ def generate_field(
             launch_area=launch_area,
             placed=tuple(p for p in placed if not p.background),
             meter=meter,
+            site=evidence,
         )
-        found = rules.get_rule(role.rule)(ctx)
+        found = invariants.place(ctx)
         if role.background:
             found = [dataclasses.replace(item, background=True) for item in found]
 
         if rules.defines_house(role.rule):
             house = _wall_frame(found, library)
+            if evidence is not None:
+                # A wall shared with a neighbour is not exterior: nothing may be
+                # mounted on it, planted against it or glazed.
+                house = evidence.without_party_walls(house, cfg.worldgen.site.party_wall_gap_m)
 
         for item in found:
             if meter is None and item.spec.cls is Cls.METER:
@@ -216,9 +277,14 @@ def generate_field(
         )
         raise WorldgenError(msg)
 
-    resolved_out = Path(out_dir) if out_dir is not None else Path("out") / "scenes" / str(seed)
+    resolved_out = _scene_dir(out_dir, seed, site)
     objects = _bake(placed, library, cfg, resolved_out)
 
+    notes = (
+        *(evidence.notes if evidence is not None else ()),
+        *(site.notes if site is not None else ()),
+        *invariants.review(house, placed, lot_bounds, cfg),
+    )
     gt_meter_id = next(o.obj_id for o in objects if o.cls is Cls.METER)
     manifest = SceneManifest(
         seed=seed,
@@ -227,9 +293,24 @@ def generate_field(
         objects=objects,
         home=home,
         gt_meter_id=gt_meter_id,
+        site_id=site.site_id if site is not None else "",
+        north_rad=site.north_rad if site is not None else _SEED_NORTH_RAD,
+        notes=notes,
     )
     save_manifest(manifest, resolved_out)
     return manifest
+
+
+def _scene_dir(out_dir: Path | str | None, seed: int, site: SiteSnapshot | None) -> Path:
+    """Where a property's meshes go: the caller's choice, else one directory per seed.
+
+    Address-built properties get a directory per site above the seeds, so two
+    addresses built with the same seed never overwrite each other's meshes.
+    """
+    if out_dir is not None:
+        return Path(out_dir)
+    scenes = Path("out") / "scenes"
+    return scenes / f"site-{site.site_id}" / str(seed) if site is not None else scenes / str(seed)
 
 
 def _wall_frame(placed: Sequence[Placement], library: AssetLibrary) -> HouseFrame:
@@ -437,6 +518,7 @@ def _bake(
                     asset_id=item.spec.asset_id,
                     background=item.background,
                     materials=mesh.runs,
+                    provenance=item.provenance,
                 )
             )
 
@@ -519,6 +601,9 @@ def save_manifest(manifest: SceneManifest, out_dir: Path | str) -> Path:
         "footprint": [[float(x), float(y)] for x, y in manifest.footprint],
         "home": manifest.home.tolist(),
         "gt_meter_id": manifest.gt_meter_id,
+        "site_id": manifest.site_id,
+        "north_rad": manifest.north_rad,
+        "notes": list(manifest.notes),
         "objects": [
             {
                 "obj_id": obj.obj_id,
@@ -533,6 +618,7 @@ def save_manifest(manifest: SceneManifest, out_dir: Path | str) -> Path:
                 "asset_id": obj.asset_id,
                 "background": obj.background,
                 "materials": [[run.material, list(run.rgb), run.n_faces] for run in obj.materials],
+                "provenance": str(obj.provenance),
             }
             for obj in manifest.objects
         ],
@@ -604,6 +690,7 @@ def load_manifest(path: Path | str) -> SceneManifest:
                     )
                     for m in o.get("materials", [])
                 ),
+                provenance=Provenance(o.get("provenance", Provenance.INFERRED)),
             )
             for o in doc["objects"]
         ]
@@ -614,6 +701,9 @@ def load_manifest(path: Path | str) -> SceneManifest:
             objects=objects,
             home=np.asarray(doc["home"], dtype=np.float64),
             gt_meter_id=int(doc["gt_meter_id"]),
+            site_id=str(doc.get("site_id", "")),
+            north_rad=float(doc.get("north_rad", _SEED_NORTH_RAD)),
+            notes=tuple(str(n) for n in doc.get("notes", [])),
         )
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         msg = f"{resolved} is missing or malformed: {exc}"

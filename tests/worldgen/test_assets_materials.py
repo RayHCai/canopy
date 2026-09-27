@@ -14,7 +14,8 @@ import numpy as np
 import pytest
 
 from canopy.contracts import CLASS_COLORS, Cls
-from canopy.worldgen.assets import BuiltMesh, load_library
+from canopy.worldgen.assets import BuiltMesh
+from canopy.worldgen.index_schema import load_library
 from canopy.worldgen.objio import read_mtl
 
 

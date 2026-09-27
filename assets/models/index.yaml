@@ -140,6 +140,14 @@ roles:
       # the other two go meter -> LB riser -> through the wall.
       p_panel: 0.82
       p_service_drop: 0.55
+      # Address-built properties only: how much likelier the meter is on each
+      # side of a real house (front faces the street), and the extra pull of a
+      # wall toward a mapped utility pole, where an overhead drop usually lands.
+      # Placeholder priors: calibrate them against surveyed homes the way the
+      # topology above was calibrated (docs/adr/0015-address-seeded-sites.md).
+      site_side_weights: {front: 1.0, side: 1.6, back: 0.8}
+      site_pole_weight: 2.0
+      site_pole_falloff_m: 15.0
 
   gas_meter:
     tag: gas_meter
@@ -171,7 +179,9 @@ roles:
     tag: tree
     rule: yard_scatter
     count: {cfg_range: trees}
-    params: {house_clearance_m: 2.0, lot_margin_m: 1.5, first_near_house: true}
+    # site_evidence: on an address-built property, place the mapped trees
+    # instead of drawing them (when the area has any mapped at all).
+    params: {house_clearance_m: 2.0, lot_margin_m: 1.5, first_near_house: true, site_evidence: trees}
 
   shed:
     tag: shed
@@ -259,6 +269,9 @@ roles:
       lot_margin_m: 2.0
       min_gap_m: 4.0
       front_yard_m: [5.0, 8.0]
+      # Address-built properties: a mapped two-storey neighbour gets a model at
+      # least this tall (the models' heights include their roofs).
+      two_storey_min_height_m: 7.0
     background: true
 
   sidewalk:
