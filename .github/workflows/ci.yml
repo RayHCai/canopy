@@ -26,6 +26,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # open3d loads EGL and GL at import, and the Ubuntu runner image ships neither.
+      - name: Install system libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgomp1 libusb-1.0-0
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:

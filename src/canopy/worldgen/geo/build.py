@@ -11,6 +11,7 @@ reads back out of the frozen snapshot this produces.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import re
@@ -149,16 +150,18 @@ def _windows_user_env(name: str) -> str:
     address search silently degrades to Photon. The registry holds the value
     as it is now. Empty off Windows, or when the value is not set.
     """
-    if sys.platform != "win32":
-        return ""
-    import winreg  # noqa: PLC0415 -- exists only on Windows; a top-level import breaks elsewhere
+    # Written as a positive platform check with a shared fallthrough, so mypy
+    # sees every statement as reachable whichever platform it checks for.
+    if sys.platform == "win32":
+        import winreg  # noqa: PLC0415 -- exists only on Windows; a top-level import breaks elsewhere
 
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as env_key:
+        with (
+            contextlib.suppress(OSError),
+            winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as env_key,
+        ):
             value, _ = winreg.QueryValueEx(env_key, name)
-    except OSError:
-        return ""
-    return str(value).strip()
+            return str(value).strip()
+    return ""
 
 
 def default_geocoder(cfg: SiteCfg, environ: Mapping[str, str] | None = None) -> Geocoder:

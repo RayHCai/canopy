@@ -18,6 +18,21 @@ env/
 .env.*
 !.env.example
 
+# --- Node / web (src/api, src/dashboard) ---
+node_modules/
+.next/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- Terraform (infra/) ---
+.terraform/
+*.tfstate
+*.tfstate.*
+
 # --- Tooling caches ---
 .pytest_cache/
 .ruff_cache/
@@ -25,6 +40,7 @@ env/
 .coverage
 .coverage.*
 coverage.xml
+coverage/
 htmlcov/
 .dmypy.json
 .hypothesis/
@@ -33,6 +49,7 @@ htmlcov/
 .ipynb_checkpoints/
 *.prof
 *.log
+logs/
 
 # --- Canopy run artefacts: generated scenes, recordings, packets ---
 out/
@@ -44,11 +61,10 @@ out/
 Thumbs.db
 desktop.ini
 *~
+.vscode/
 
-# Claude Code: share project settings, ignore per-user overrides.
-.claude/settings.local.json
-
-# Keep the shared VS Code settings, ignore per-user state.
-.vscode/*
-!.vscode/settings.json
-!.vscode/extensions.json
+# --- AI tool files (any depth) ---
+.claude/
+CLAUDE.md
+AGENTS.md
+docs/agent-guide.md
