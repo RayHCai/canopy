@@ -47,9 +47,14 @@ def _suggestion(address: ResolvedAddress) -> dict[str, Any]:
 
 
 def _wait_for_state(
-    session: ViewerSession, job_id: int, state: str, *, timeout: float = 5.0
+    session: ViewerSession, job_id: int, state: str, *, timeout: float = 30.0
 ) -> dict[str, Any]:
-    """Poll :meth:`ViewerSession.site_job` until it reports ``state``, or fail the test."""
+    """Poll :meth:`ViewerSession.site_job` until it reports ``state``, or fail the test.
+
+    Reaching ``done`` means generating a whole property, which takes several
+    seconds on its own and longer on a loaded CI runner, so the deadline is
+    generous. It only bounds a hang; it is not a performance check.
+    """
     deadline = time.monotonic() + timeout
     status = session.site_job(job_id)
     while status["state"] != state:
