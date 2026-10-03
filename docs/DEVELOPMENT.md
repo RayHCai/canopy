@@ -64,7 +64,7 @@ Cross-module types live in `src/canopy/contracts.py`; decisions in
 
 ## Known limitations & next steps
 
-- Kinematic dynamics only — no aerodynamics or wind.
+- Kinematic dynamics only, no aerodynamics or wind.
 - Detection is rule-based (range + colour), not a learned model; the `detect`
   (YOLO) and `rl` tracks are unfinished.
 - Viewer runs are not seed-reproducible end to end.
