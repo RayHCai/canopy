@@ -61,11 +61,9 @@ out/
 Thumbs.db
 desktop.ini
 *~
+.vscode/
 
-# Claude Code: share project settings, ignore per-user overrides.
-.claude/settings.local.json
-
-# Keep the shared VS Code settings, ignore per-user state.
-.vscode/*
-!.vscode/settings.json
-!.vscode/extensions.json
+# --- AI tool files (any depth) ---
+.claude/
+CLAUDE.md
+AGENTS.md
