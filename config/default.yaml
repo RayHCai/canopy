@@ -137,6 +137,7 @@ perception:
       val: [0.13, 0.55]       # shed/fence, 0.85 for the gas meter) sits well outside this band
       z_m: [0.0, 2.6]
       cell_m: 0.1
+      neighbour_colour: true  # a shaded wall's noisiest single hits pass alone; pooled, they do not
       min_hits: 20
       length_m: [1.7, 2.4]    # taller than wide, so height sorts as the longest extent
       width_m: [0.4, 1.4]     # its span along the wall
@@ -152,6 +153,7 @@ perception:
       val: [0.13, 0.55]
       z_m: [0.0, 2.6]
       cell_m: 0.1
+      neighbour_colour: true  # as DOOR: stray wall cells must not widen a door into a garage door
       min_hits: 20
       length_m: [2.0, 6.0]    # wider than tall, so its span sorts as the longest extent
       width_m: [1.6, 2.4]     # its height
